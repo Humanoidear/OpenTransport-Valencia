@@ -2,7 +2,10 @@
 
 Android app for live EMT Valencia buses, ported from the web version with the
 same data, prediction and UX, styled with **Material 3 (Expressive)** via
-`react-native-paper` and rendered on **free OpenStreetMap-based vector maps**
+`react-native-paper`, Google's **Material Icons**, and Android **Material You
+wallpaper colors** via Expo UI. Flyouts use expressive M3 bottom sheets, a
+segmented search/favorites switcher, tonal surfaces and large native-style
+shapes. The map uses **free OpenStreetMap-based vector maps**
 (MapLibre GL with CARTO dark-matter / positron styles — no API key).
 
 ## Features

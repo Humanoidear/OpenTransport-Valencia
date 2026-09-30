@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="12dp"
+    android:background="#E6111827">
+
+    <TextView
+        android:id="@+id/widget_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textStyle="bold"
+        android:textSize="15sp"
+        android:textColor="#FFFFFFFF"
+        android:text="@string/widget_choose_stop" />
+
+    <TextView
+        android:id="@+id/widget_subtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:textSize="11sp"
+        android:textColor="#FF9CA3AF"
+        android:text="" />
+
+    <TextView
+        android:id="@+id/widget_row1"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="4dp"
+        android:textSize="14sp"
+        android:textColor="#FFE5E7EB" />
+
+    <TextView
+        android:id="@+id/widget_row2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="14sp"
+        android:textColor="#FFE5E7EB" />
+
+    <TextView
+        android:id="@+id/widget_row3"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="14sp"
+        android:textColor="#FFE5E7EB" />
+
+    <TextView
+        android:id="@+id/widget_row4"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="14sp"
+        android:textColor="#FFE5E7EB" />
+</LinearLayout>
