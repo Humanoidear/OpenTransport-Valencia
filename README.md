@@ -2,11 +2,12 @@
 
 Android app for live EMT Valencia buses, ported from the web version with the
 same data, prediction and UX, styled with **Material 3 (Expressive)** via
-`react-native-paper`.
+`react-native-paper` and rendered on **free OpenStreetMap-based vector maps**
+(MapLibre GL with CARTO dark-matter / positron styles — no API key).
 
 ## Features
 
-- **Live bus map** (Google Maps) with buses dead-reckoned along their GTFS route
+- **Live bus map** (MapLibre GL) with buses dead-reckoned along their GTFS route
   (extrapolate at measured speed, ease corrections, no snapping) and pinned at
   stops until the API shows them leaving.
 - **Reveal a line**: open a stop, tap a line → its route (ida blue / vuelta red)
@@ -24,25 +25,18 @@ same data, prediction and UX, styled with **Material 3 (Expressive)** via
 
 ## Run
 
+MapLibre is a native module, so this needs a **development build** (not Expo Go):
+
 ```sh
 npm install
-```
-
-The map needs a Google Maps Android API key. Put yours in `app.json`:
-
-```json
-"android": { "config": { "googleMaps": { "apiKey": "YOUR_KEY" } } }
-```
-
-Then:
-
-```sh
-# Expo Go (map renders, no native config beyond the key)
-npx expo start
-
-# or a development build
 npx expo prebuild --platform android
 npx expo run:android
+```
+
+or start the dev server first and press `a`:
+
+```sh
+npx expo start
 ```
 
 > The EMT WSSE token is a static replayed token from a captured request; the

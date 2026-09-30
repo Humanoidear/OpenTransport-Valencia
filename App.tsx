@@ -8,7 +8,16 @@ import {
   Text,
   View,
 } from "react-native";
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE, type Region } from "react-native-maps";
+import {
+  Camera,
+  GeoJSONSource,
+  Layer,
+  Map as MapLibreMap,
+  Marker,
+  type CameraRef,
+  type CircleLayerStyle,
+  type LineLayerStyle,
+} from "@maplibre/maplibre-react-native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   Chip,
@@ -16,7 +25,6 @@ import {
   FAB,
   IconButton,
   List,
-  MD3Theme,
   Modal,
   PaperProvider,
   Portal,
@@ -48,6 +56,11 @@ const STOP_BY_ID = new Map(STOPS.map((s) => [String(s.id), s]));
 
 const prepared = new Map<string, geo.PreparedRoute[]>();
 const stopArcCache = new WeakMap<geo.PreparedRoute, Map<string, number>>();
+
+const STYLES = {
+  dark: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+  light: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+};
 
 function shapeForDir(line: string, dir: "ida" | "vuelta") {
   return ROUTES[line]?.[dir]?.shapes?.[0] || null;
@@ -92,6 +105,7 @@ function stopArc(route: geo.PreparedRoute, stop: Stop) {
 const OFF_ROUTE = 150;
 const POLL_MS = 5000;
 const CORRECT_MS = 400;
+const VALENCIA: [number, number] = [-0.3763, 39.4699];
 
 interface BusState {
   num: number;
@@ -111,12 +125,19 @@ interface BusState {
   hold: geo.Hold | null;
 }
 
-const VALENCIA: Region = {
-  latitude: 39.4699,
-  longitude: -0.3763,
-  latitudeDelta: 0.09,
-  longitudeDelta: 0.09,
-};
+function fc(features: object[]): GeoJSON.FeatureCollection {
+  return { type: "FeatureCollection", features: features as GeoJSON.Feature[] };
+}
+function pt(lon: number, lat: number, props: object = {}): GeoJSON.Feature {
+  return { type: "Feature", properties: props, geometry: { type: "Point", coordinates: [lon, lat] } };
+}
+function line(coords: number[][], props: object = {}): GeoJSON.Feature {
+  return {
+    type: "Feature",
+    properties: props,
+    geometry: { type: "LineString", coordinates: coords },
+  };
+}
 
 export default function App() {
   return (
@@ -146,16 +167,19 @@ function MainScreen({ dark, onToggleDark }: { dark: boolean; onToggleDark: () =>
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [follow, setFollow] = useState<BusState | null>(null);
   const [followInfo, setFollowInfo] = useState<geo.Upcoming[]>([]);
-  const [region, setRegion] = useState<Region>(VALENCIA);
+  const [viewport, setViewport] = useState<{ zoom: number; b: [number, number, number, number] }>({
+    zoom: 13,
+    b: [-0.43, 39.42, -0.32, 39.52],
+  });
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [favorites, setFavorites] = useState<number[]>([]);
   const [locating, setLocating] = useState(false);
-  const [userLoc, setUserLoc] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [userLoc, setUserLoc] = useState<[number, number] | null>(null);
   const [incidentsOpen, setIncidentsOpen] = useState(true);
   const [loading, setLoading] = useState(false);
 
-  const mapRef = useRef<MapView>(null);
+  const cameraRef = useRef<CameraRef>(null);
   const busesRef = useRef<BusState[]>([]);
   busesRef.current = buses;
   const followRef = useRef<BusState | null>(null);
@@ -191,7 +215,7 @@ function MainScreen({ dark, onToggleDark }: { dark: boolean; onToggleDark: () =>
     return () => clearInterval(iv);
   }, []);
 
-  // follow camera rides the followed bus (outside the state updater)
+  // follow camera rides the followed bus (jump each frame; marker is at center)
   useEffect(() => {
     const f = followRef.current;
     if (!f) return;
@@ -200,14 +224,8 @@ function MainScreen({ dark, onToggleDark }: { dark: boolean; onToggleDark: () =>
     const heading =
       cur.route && cur.spd > 1 && cur.s < cur.route.total - 5
         ? geo.routeBearing(cur.route, cur.s)
-        : undefined;
-    mapRef.current?.animateCamera(
-      {
-        center: { latitude: cur.render[1], longitude: cur.render[0] },
-        heading,
-      },
-      { duration: 400 },
-    );
+        : 0;
+    cameraRef.current?.jumpTo({ center: [cur.render[0], cur.render[1]], bearing: heading });
   }, [buses]);
 
   // ---------- polling live buses for the revealed line ----------
@@ -340,19 +358,16 @@ function MainScreen({ dark, onToggleDark }: { dark: boolean; onToggleDark: () =>
       } finally {
         setLoading(false);
         if (fit) {
-          let minLat = stop.lat, maxLat = stop.lat, minLon = stop.lon, maxLon = stop.lon;
+          let w = stop.lon, e = stop.lon, s = stop.lat, n = stop.lat;
           for (const l of stop.lineas)
             for (const sh of shapesFor(l))
               for (const [lat, lon] of sh) {
-                minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat);
-                minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon);
+                w = Math.min(w, lon); e = Math.max(e, lon);
+                s = Math.min(s, lat); n = Math.max(n, lat);
               }
-          mapRef.current?.fitToCoordinates(
-            [
-              { latitude: minLat, longitude: minLon },
-              { latitude: maxLat, longitude: maxLon },
-            ],
-            { edgePadding: { top: 80, right: 60, bottom: 340, left: 60 }, animated: true },
+          cameraRef.current?.fitBounds(
+            [w, s, e, n],
+            { padding: { top: 120, left: 60, right: 60, bottom: 360 }, duration: 800 },
           );
         }
       }
@@ -380,90 +395,130 @@ function MainScreen({ dark, onToggleDark }: { dark: boolean; onToggleDark: () =>
     }
   }, []);
 
-  // stops visible in the current viewport (and zoomed in enough)
-  const visibleStops = useMemo(() => {
-    if (region.latitudeDelta > 0.09) return [];
-    const dLat = region.latitudeDelta / 2;
-    const dLon = region.longitudeDelta / 2;
-    const out: Stop[] = [];
-    for (const s of STOPS) {
-      if (Math.abs(s.lat - region.latitude) <= dLat && Math.abs(s.lon - region.longitude) <= dLon) {
-        out.push(s);
-        if (out.length >= 300) break;
+  // ---------- map data (GeoJSON) ----------
+  const stopSource = useMemo(() => {
+    const [w, s, e, n] = viewport.b;
+    if (viewport.zoom < 12) return fc([]);
+    const feats: GeoJSON.Feature[] = [];
+    for (const st of STOPS) {
+      if (st.lat >= s && st.lat <= n && st.lon >= w && st.lon <= e) {
+        feats.push(pt(st.lon, st.lat, { id: st.id }));
+        if (feats.length >= 400) break;
       }
     }
-    return out;
-  }, [region]);
+    return fc(feats);
+  }, [viewport]);
+
+  const ctxSource = useMemo(() => {
+    if (!selectedStop) return fc([]);
+    return fc(
+      selectedStop.lineas.flatMap((l) =>
+        shapesFor(l).map((sh) => line(sh.map(([lat, lon]) => [lon, lat]), { linea: l })),
+      ),
+    );
+  }, [selectedStop]);
+
+  const mainSource = useMemo(() => {
+    if (!currentLine) return fc([]);
+    return fc(
+      (["ida", "vuelta"] as const)
+        .map((dir) => {
+          const sh = shapeForDir(currentLine, dir);
+          return sh ? line(sh.map(([lat, lon]) => [lon, lat]), { dir }) : null;
+        })
+        .filter(Boolean) as GeoJSON.Feature[],
+    );
+  }, [currentLine]);
+
+  const ctxPaint = useMemo(() => {
+    const expr: any = ["match", ["get", "linea"]];
+    selectedStop?.lineas.forEach((l, i) => expr.push(l, lineColor(l, selectedStop.lineas)));
+    expr.push("#888");
+    return { lineColor: expr, lineWidth: 4, lineOpacity: 0.85, lineJoin: "round", lineCap: "round" } as LineLayerStyle;
+  }, [selectedStop]);
+
+  const stopPaint: CircleLayerStyle = useMemo(
+    () => ({
+      circleRadius: ["interpolate", ["linear"], ["zoom"], 12, 3, 16, 6],
+      circleColor: theme.dark ? "#e4e4e7" : "#3f3f46",
+      circleOpacity: 0.85,
+      circleStrokeColor: theme.dark ? "#18181b" : "#ffffff",
+      circleStrokeWidth: 1,
+    }),
+    [theme.dark],
+  );
 
   const selectedLines = selectedStop ? selectedStop.lineas : [];
   const incidentsFor = (line: string) =>
     incidents.filter((i) => i.lines.includes(line.toUpperCase()));
 
-  const contextRoutes = useMemo(() => {
-    if (!selectedStop) return [];
-    return selectedLines.map((line, i) => ({
-      line,
-      color: lineColor(line, selectedLines),
-      coords: shapesFor(line).map((sh) =>
-        sh.map(([lat, lon]) => ({ latitude: lat, longitude: lon })),
-      ),
-    }));
-  }, [selectedStop, selectedLines]);
-
-  const mainRoutes = useMemo(() => {
-    if (!currentLine) return [];
-    const out: { color: string; coords: { latitude: number; longitude: number }[] }[] = [];
-    for (const dir of ["ida", "vuelta"] as const) {
-      const sh = shapeForDir(currentLine, dir);
-      if (sh) out.push({ color: dir === "ida" ? idaColor : vueltaColor, coords: sh.map(([lat, lon]) => ({ latitude: lat, longitude: lon })) });
-    }
-    return out;
-  }, [currentLine]);
-
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.surface }}>
-      <MapView
-        ref={mapRef}
+      <MapLibreMap
         style={StyleSheet.absoluteFill}
-        provider={PROVIDER_GOOGLE}
-        initialRegion={VALENCIA}
-        onRegionChangeComplete={setRegion}
-        toolbarEnabled={false}
+        mapStyle={dark ? STYLES.dark : STYLES.light}
+        attribution
+        logo
+        onRegionDidChange={(e) => {
+          const [w, s, east, north] = e.nativeEvent.bounds;
+          setViewport({ zoom: e.nativeEvent.zoom, b: [w, s, east, north] });
+        }}
       >
-        {contextRoutes.map((r) =>
-          r.coords.map((c, i) => (
-            <Polyline key={`${r.line}-${i}`} coordinates={c} strokeColor={r.color} strokeWidth={4} />
-          )),
-        )}
-        {mainRoutes.map((r, i) => (
-          <Polyline key={`main-${i}`} coordinates={r.coords} strokeColor={r.color} strokeWidth={5} zIndex={3} />
-        ))}
-        {userLoc ? <Marker coordinate={userLoc} anchor={{ x: 0.5, y: 0.5 }}><View style={styles.userDot} /></Marker> : null}
-        {visibleStops.map((s) => (
-          <Marker
-            key={s.id}
-            coordinate={{ latitude: s.lat, longitude: s.lon }}
-            anchor={{ x: 0.5, y: 0.5 }}
-            onPress={() => selectStop(s, false)}
-            tracksViewChanges={false}
-          >
-            <View style={styles.stopDot} />
+        <Camera ref={cameraRef} initialViewState={{ center: VALENCIA, zoom: 13 }} />
+
+        <GeoJSONSource id="ctx" data={ctxSource}>
+          <Layer id="ctx-layer" type="line" source="ctx" style={ctxPaint} />
+        </GeoJSONSource>
+
+        <GeoJSONSource id="main" data={mainSource}>
+          <Layer
+            id="main-ida"
+            type="line"
+            source="main"
+            filter={["==", ["get", "dir"], "ida"]}
+            style={{ lineColor: idaColor, lineWidth: 5, lineOpacity: 0.9, lineJoin: "round", lineCap: "round" } as LineLayerStyle}
+          />
+          <Layer
+            id="main-vuelta"
+            type="line"
+            source="main"
+            filter={["==", ["get", "dir"], "vuelta"]}
+            style={{ lineColor: vueltaColor, lineWidth: 5, lineOpacity: 0.9, lineJoin: "round", lineCap: "round" } as LineLayerStyle}
+          />
+        </GeoJSONSource>
+
+        <GeoJSONSource
+          id="stops"
+          data={stopSource}
+          onPress={(e) => {
+            const id = e.nativeEvent.features?.[0]?.properties?.id;
+            const st = id != null ? STOP_BY_ID.get(String(id)) : null;
+            if (st) selectStop(st, false);
+          }}
+        >
+          <Layer id="stops-layer" type="circle" source="stops" style={stopPaint} />
+        </GeoJSONSource>
+
+        {userLoc ? (
+          <Marker id="user" lngLat={userLoc} anchor="center">
+            <View style={styles.userDot} />
           </Marker>
-        ))}
+        ) : null}
+
         {buses.map((b) => (
           <Marker
             key={b.num}
-            coordinate={{ latitude: b.render[1], longitude: b.render[0] }}
-            anchor={{ x: 0.5, y: 0.5 }}
+            id={`bus-${b.num}`}
+            lngLat={b.render}
+            anchor="center"
             onPress={() => followBus(b)}
-            tracksViewChanges={false}
           >
             <View style={[styles.busChip, follow?.num === b.num && styles.busChipActive]}>
               <Text style={styles.busText}>{b.line}</Text>
             </View>
           </Marker>
         ))}
-      </MapView>
+      </MapLibreMap>
 
       {/* top bar */}
       <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
@@ -651,12 +706,9 @@ function MainScreen({ dark, onToggleDark }: { dark: boolean; onToggleDark: () =>
           const { status } = await Location.requestForegroundPermissionsAsync();
           if (status === "granted") {
             const pos = await Location.getCurrentPositionAsync({});
-            const c = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+            const c: [number, number] = [pos.coords.longitude, pos.coords.latitude];
             setUserLoc(c);
-            mapRef.current?.animateToRegion(
-              { ...c, latitudeDelta: 0.02, longitudeDelta: 0.02 },
-              800,
-            );
+            cameraRef.current?.easeTo({ center: c, zoom: 15, duration: 800 });
           }
           setLocating(false);
         }}
@@ -684,7 +736,6 @@ const styles = StyleSheet.create({
   topBar: { position: "absolute", top: 0, left: 12, right: 12, flexDirection: "row", alignItems: "center", gap: 8 },
   search: { flex: 1 },
   roundBtn: { borderRadius: 28 },
-  stopDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#888", borderWidth: 1.5, borderColor: "#fff" },
   userDot: { width: 14, height: 14, borderRadius: 7, backgroundColor: "#22c55e", borderWidth: 2, borderColor: "#fff" },
   busChip: {
     minWidth: 34, height: 22, borderRadius: 11, alignItems: "center", justifyContent: "center",

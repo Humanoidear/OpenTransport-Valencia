@@ -12,7 +12,8 @@
         {
           "locationWhenInUsePermission": "Show the bus stops around you"
         }
-      ]
+      ],
+      "@maplibre/maplibre-react-native"
     ],
     "ios": {
       "supportsTablet": true
@@ -26,11 +27,6 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "config": {
-        "googleMaps": {
-          "apiKey": "AIza-SY-INSERT-YOUR-ANDROID-MAPS-KEY"
-        }
-      },
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION"
