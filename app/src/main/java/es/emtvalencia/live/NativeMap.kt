@@ -39,6 +39,27 @@ import kotlin.math.hypot
 
 data class MapViewport(val zoom: Double, val west: Double, val south: Double, val east: Double, val north: Double)
 
+/** Basemaps: CARTO dark/light vector styles, plus satellite (Esri). */
+const val STYLE_DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+const val STYLE_LIGHT = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+const val STYLE_SATELLITE = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
+
+/** Keyless satellite raster style (Esri World Imagery). */
+val SATELLITE_STYLE = """
+{
+  "version": 8,
+  "sources": {
+    "satellite": {
+      "type": "raster",
+      "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+      "tileSize": 256,
+      "attribution": "Esri, Maxar, Earthstar Geographics"
+    }
+  },
+  "layers": [{"id": "satellite", "type": "raster", "source": "satellite"}]
+}
+""".trimIndent()
+
 /** Distinct colour per ride in a planned trip. */
 private val JOURNEY_PALETTE = listOf("#2563EB", "#DB2777", "#16A34A", "#F59E0B", "#7C3AED", "#0891B2")
 
@@ -65,6 +86,8 @@ data class MapData(
     val journeyStops: List<JourneyStop> = emptyList(),
     val places: List<Place> = emptyList(),
     val metroLines: List<String> = emptyList(),
+    val metrobusRoutes: String = "{\"type\":\"FeatureCollection\",\"features\":[]}",
+    val metrobusLines: List<String> = emptyList(),
 )
 
 /** One drawn stretch of a planned trip: a bus ride along the line, or a walk. */
@@ -83,6 +106,7 @@ fun TransitMap(
     onBusTap: (Int) -> Unit,
     onPlaceTap: (Place) -> Unit,
     onViewport: (MapViewport) -> Unit,
+    onBlankTap: () -> Unit = {},
     onReady: (NativeMapController) -> Unit,
 ) {
     val context = LocalContext.current
@@ -93,6 +117,7 @@ fun TransitMap(
         controller.onBusTap = onBusTap
         controller.onPlaceTap = onPlaceTap
         controller.onViewport = onViewport
+        controller.onBlankTap = onBlankTap
         controller.update(styleUrl, colors, data)
         onReady(controller)
     }
@@ -113,6 +138,7 @@ class NativeMapController(context: Context) {
     var onStopTap: (Stop) -> Unit = {}
     var onBusTap: (Int) -> Unit = {}
     var onPlaceTap: (Place) -> Unit = {}
+    var onBlankTap: () -> Unit = {}
     var onViewport: (MapViewport) -> Unit = {}
 
     private var map: MapLibreMap? = null
@@ -129,6 +155,20 @@ class NativeMapController(context: Context) {
     private var lastStops: List<Stop>? = null
     private var lastJourney: List<JourneySegment>? = null
     private var lastTransfer: List<JourneyStop>? = null
+    private var lastMbus: String? = null
+    private var lastMbusLines: List<String> = emptyList()
+
+    /** Keeps only the routes of [lines] (a selected stop's lines). */
+    private fun metrobusJson(all: String, lines: List<String>): String {
+        if (lines.isEmpty()) return EMPTY
+        val features = runCatching { JSONObject(all).optJSONArray("features") }.getOrNull() ?: return EMPTY
+        val kept = JSONArray()
+        for (i in 0 until features.length()) {
+            val feature = features.optJSONObject(i) ?: continue
+            if (feature.optJSONObject("properties")?.optString("line") in lines) kept.put(feature)
+        }
+        return JSONObject().put("type", "FeatureCollection").put("features", kept).toString()
+    }
     private var lastPlaces: List<Place>? = null
     private var lastUser: LonLat? = null
     private val appContext = context.applicationContext
@@ -165,6 +205,14 @@ class NativeMapController(context: Context) {
                     map = readyMap
                     // Keep the view inside the Valencian Community scale.
                     readyMap.setMinZoomPreference(8.0)
+                    // Open on the city unless something already framed the map —
+                    // otherwise the default (0,0) view is blank.
+                    if (readyMap.cameraPosition.zoom < 8.0) {
+                        readyMap.cameraPosition = CameraPosition.Builder()
+                            .target(LatLng(39.4699, -0.3763))
+                            .zoom(12.0)
+                            .build()
+                    }
                     installListeners(readyMap)
                     loadStyle(url)
                 }
@@ -186,14 +234,17 @@ class NativeMapController(context: Context) {
     }
 
     /** Camera trails just behind the vehicle, looking along its heading. */
-    fun follow(point: LonLat, bearing: Double, pitch: Double = 58.0) {
+    fun follow(point: LonLat, bearing: Double) {
         val current = map?.cameraPosition ?: return
         map?.cameraPosition = CameraPosition.Builder(current)
             .target(LatLng(point.lat, point.lon))
             .bearing(bearing)
-            .tilt(pitch)
+            .tilt(followPitch)
             .build()
     }
+
+    /** 58 = behind-the-bus 3D view, 0 = flat top-down. */
+    var followPitch = 58.0
 
     fun fit(bounds: LngLatBounds, bottomPadding: Int = 100) {
         map?.animateCamera(
@@ -242,6 +293,8 @@ class NativeMapController(context: Context) {
         serviceIcon("emt.png", 0xFFFFFFFF.toInt())?.let { s.addImage("emt-icon", it) }
         serviceIcon("metrovalencia.png", 0xFFFF8A80.toInt())?.let { s.addImage("metro-icon", it) }
         serviceIcon("valenbisi.png", 0xFF90CAF9.toInt())?.let { s.addImage("valenbisi-icon", it) }
+        serviceIcon("metrobus.png", 0xFF90CAF9.toInt())?.let { s.addImage("metrobus-icon", it) }
+        serviceIcon("rodalies.png", 0xFFE30613.toInt())?.let { s.addImage("rodalies-icon", it) }
         s.addImage("vb-pill", pillImage())
     }
 
@@ -268,7 +321,14 @@ class NativeMapController(context: Context) {
         paint.color = color
         canvas.drawCircle(size / 2f, size / 2f, size / 2f, paint)
         val pad = size * 0.24f
-        canvas.drawBitmap(logo, null, RectF(pad, pad, size - pad, size - pad), Paint(Paint.ANTI_ALIAS_FLAG))
+        val box = size - pad * 2
+        // Fit the logo inside the box preserving its aspect ratio.
+        val scale = minOf(box / logo.width, box / logo.height)
+        val w = logo.width * scale
+        val h = logo.height * scale
+        val left = (size - w) / 2f
+        val top = (size - h) / 2f
+        canvas.drawBitmap(logo, null, RectF(left, top, left + w, top + h), Paint(Paint.ANTI_ALIAS_FLAG))
         return bitmap
     }
 
@@ -286,7 +346,9 @@ class NativeMapController(context: Context) {
         for (i in 0 until features.length()) {
             val feature = features.optJSONObject(i) ?: continue
             if (feature.optJSONObject("geometry")?.optString("type") != "LineString") continue
-            if (feature.optJSONObject("properties")?.opt("line")?.toString() in lines) kept.put(feature)
+            // Metro line keys are "M3"; the geojson property is the number 3.
+            val number = feature.optJSONObject("properties")?.opt("line")?.toString()
+            if (number != null && lines.any { it.removePrefix("M") == number }) kept.put(feature)
         }
         val json = JSONObject().put("type", "FeatureCollection").put("features", kept).toString()
         metroRoutesCache = lines to json
@@ -297,7 +359,12 @@ class NativeMapController(context: Context) {
         addServiceIcons(s)
         s.addSource(GeoJsonSource(SRC_CONTEXT, EMPTY))
         s.addSource(GeoJsonSource(SRC_MAIN, EMPTY))
-        s.addSource(GeoJsonSource(SRC_STOPS, EMPTY))
+        s.addSource(
+            GeoJsonSource(
+                SRC_STOPS,
+                GeoJsonOptions().withCluster(true).withClusterRadius(50).withClusterMaxZoom(13),
+            ),
+        )
         s.addSource(GeoJsonSource(SRC_BUSES, EMPTY))
         s.addSource(GeoJsonSource(SRC_USER, EMPTY))
         s.addSource(GeoJsonSource(SRC_JOURNEY, EMPTY))
@@ -327,8 +394,12 @@ class NativeMapController(context: Context) {
                         PropertyFactory.fillExtrusionOpacity(0.78f),
                     )
                 extrusion.setMinZoom(14f)
-                val label = s.layers.firstOrNull { it is SymbolLayer }
-                if (label != null) s.addLayerBelow(extrusion, label.id) else s.addLayer(extrusion)
+                // Sit above the basemap fills/lines but below the first real text
+                // label, so buildings aren't hidden on light/voyager styles.
+                val textLabel = s.layers.firstOrNull {
+                    it is SymbolLayer && it.getTextField() != null
+                }
+                if (textLabel != null) s.addLayerBelow(extrusion, textLabel.id) else s.addLayer(extrusion)
             } catch (_: Exception) {
                 // If a provider changes its source schema, keep the street map usable.
             }
@@ -366,6 +437,7 @@ class NativeMapController(context: Context) {
                 ),
         )
         val stopsLayer = SymbolLayer("emt-stops", SRC_STOPS)
+            .withFilter(Expression.not(Expression.has("point_count")))
             .withProperties(
                 PropertyFactory.iconImage("emt-icon"),
                 PropertyFactory.iconSize(0.42f),
@@ -374,6 +446,34 @@ class NativeMapController(context: Context) {
             )
         stopsLayer.setMinZoom(12f)
         s.addLayer(stopsLayer)
+        // Zoomed out, EMT stops group into count bubbles like the other networks.
+        s.addLayer(
+            CircleLayer("emt-stops-clusters", SRC_STOPS)
+                .withFilter(Expression.has("point_count"))
+                .withProperties(
+                    PropertyFactory.circleColor(0xFFD32F2F.toInt()),
+                    PropertyFactory.circleOpacity(0.9f),
+                    PropertyFactory.circleStrokeColor(colors.stopStroke),
+                    PropertyFactory.circleStrokeWidth(1.5f),
+                    PropertyFactory.circleRadius(
+                        Expression.step(
+                            Expression.get("point_count"),
+                            Expression.literal(15f),
+                            Expression.stop(10, 20f),
+                            Expression.stop(50, 26f),
+                        ),
+                    ),
+                ),
+        )
+        s.addLayer(
+            SymbolLayer("emt-stops-cluster-count", SRC_STOPS)
+                .withFilter(Expression.has("point_count"))
+                .withProperties(
+                    PropertyFactory.textField(Expression.toString(Expression.get("point_count"))),
+                    PropertyFactory.textSize(11f),
+                    PropertyFactory.textColor(colors.busText),
+                ),
+        )
         s.addLayer(
             CircleLayer("emt-buses-ida", SRC_BUSES)
                 .withFilter(Expression.eq(Expression.get("dir"), Expression.literal("ida")))
@@ -438,6 +538,30 @@ class NativeMapController(context: Context) {
         )
         // Metrovalencia route lines, each in its own brand colour.
         s.addSource(GeoJsonSource(SRC_METRO, EMPTY))
+        s.addSource(GeoJsonSource(SRC_MBUS, EMPTY))
+        s.addSource(GeoJsonSource(SRC_RD, EMPTY))
+        s.addLayer(
+            LineLayer("emt-rd-routes", SRC_RD)
+                .withProperties(
+                    PropertyFactory.lineColor(Expression.toColor(Expression.get("color"))),
+                    PropertyFactory.lineWidth(4f),
+                    PropertyFactory.lineOpacity(0.85f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                )
+                .also { it.setMinZoom(9f) },
+        )
+        s.addLayer(
+            LineLayer("emt-mbus-routes", SRC_MBUS)
+                .withProperties(
+                    PropertyFactory.lineColor(Expression.toColor(Expression.get("color"))),
+                    PropertyFactory.lineWidth(3.5f),
+                    PropertyFactory.lineOpacity(0.8f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                )
+                .also { it.setMinZoom(10f) },
+        )
         s.addLayer(
             LineLayer("emt-metro-routes", SRC_METRO)
                 .withProperties(
@@ -490,6 +614,8 @@ class NativeMapController(context: Context) {
                         Expression.get("network"),
                         Expression.literal("Metro"), Expression.literal("metro-icon"),
                         Expression.literal("Valenbisi"), Expression.literal("valenbisi-icon"),
+                        Expression.literal("Metrobus"), Expression.literal("metrobus-icon"),
+                        Expression.literal("Rodalies"), Expression.literal("rodalies-icon"),
                         Expression.literal("emt-icon"),
                     ),
                 ),
@@ -625,6 +751,11 @@ class NativeMapController(context: Context) {
             lastPlaces = data.places
             s.getSourceAs<GeoJsonSource>(SRC_PLACES)?.setGeoJson(placesJson(data.places))
         s.getSourceAs<GeoJsonSource>(SRC_METRO)?.setGeoJson(metroRoutesJson(data.metroLines))
+        if (lastMbus != data.metrobusRoutes || lastMbusLines != data.metrobusLines) {
+            lastMbus = data.metrobusRoutes
+            lastMbusLines = data.metrobusLines
+            s.getSourceAs<GeoJsonSource>(SRC_MBUS)?.setGeoJson(metrobusJson(data.metrobusRoutes, data.metrobusLines))
+        }
         }
         if (lastUser != data.userLocation) {
             lastUser = data.userLocation
@@ -651,28 +782,34 @@ class NativeMapController(context: Context) {
                     return@OnMapClickListener true
                 }
             }
+            // Hit-test stops and places together and take the closest within range,
+            // so a Metrobús/other point isn't shadowed by a nearby EMT stop.
             val stop = data.visibleStops.minByOrNull { st ->
                 val p = m.projection.toScreenLocation(LatLng(st.lat, st.lon))
                 hypot((p.x - screen.x).toDouble(), (p.y - screen.y).toDouble())
             }
-            if (stop != null) {
-                val p = m.projection.toScreenLocation(LatLng(stop.lat, stop.lon))
-                if (hypot((p.x - screen.x).toDouble(), (p.y - screen.y).toDouble()) <= 30 * density) {
-                    onStopTap(stop)
-                    return@OnMapClickListener true
-                }
-            }
+            val stopDistance = stop?.let {
+                val p = m.projection.toScreenLocation(LatLng(it.lat, it.lon))
+                hypot((p.x - screen.x).toDouble(), (p.y - screen.y).toDouble())
+            } ?: Double.MAX_VALUE
             val place = data.places.minByOrNull { pl ->
                 val p = m.projection.toScreenLocation(LatLng(pl.lat, pl.lon))
                 hypot((p.x - screen.x).toDouble(), (p.y - screen.y).toDouble())
             }
-            if (place != null) {
-                val p = m.projection.toScreenLocation(LatLng(place.lat, place.lon))
-                if (hypot((p.x - screen.x).toDouble(), (p.y - screen.y).toDouble()) <= 34 * density) {
-                    onPlaceTap(place)
-                    return@OnMapClickListener true
-                }
+            val placeDistance = place?.let {
+                val p = m.projection.toScreenLocation(LatLng(it.lat, it.lon))
+                hypot((p.x - screen.x).toDouble(), (p.y - screen.y).toDouble())
+            } ?: Double.MAX_VALUE
+
+            if (stop != null && stopDistance <= 30 * density && stopDistance <= placeDistance) {
+                onStopTap(stop)
+                return@OnMapClickListener true
             }
+            if (place != null && placeDistance <= 34 * density) {
+                onPlaceTap(place)
+                return@OnMapClickListener true
+            }
+            onBlankTap()
             false
         }
         m.addOnMapClickListener(clickListener!!)
@@ -737,6 +874,7 @@ class NativeMapController(context: Context) {
     private fun placeColor(place: Place): String = when (place.network) {
         Network.Metro -> "#E4002B"
         Network.Metrobus -> "#0EA5E9"
+        Network.Rodalies -> "#E30613"
         Network.Emt -> "#F97316"
         Network.Valenbisi -> when {
             !place.open -> "#9CA3AF"
@@ -818,7 +956,10 @@ class NativeMapController(context: Context) {
         private const val SRC_JOURNEY = "emt-journey"
         private const val SRC_PLACES = "emt-places"
         private const val SRC_METRO = "emt-metro"
+        private const val SRC_MBUS = "emt-mbus"
+        private const val SRC_RD = "emt-rd"
         private const val SRC_TRANSFER = "emt-transfer"
+
         private val USER_COLOR = 0xFF1A73E8.toInt()
         private const val EMPTY = "{\"type\":\"FeatureCollection\",\"features\":[]}"
     }

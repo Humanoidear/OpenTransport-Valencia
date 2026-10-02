@@ -34,8 +34,8 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/** How much of the screen the open pane currently covers (0..1). */
-val popoverVisibleFraction = mutableFloatStateOf(0f)
+/** Visible height of the open pane in pixels (0 when none). */
+val popoverVisibleHeight = mutableFloatStateOf(0f)
 
 /**
  * Bottom sheet the user drags between three heights — a small peek, half and
@@ -49,7 +49,7 @@ fun DraggableSheet(
     modifier: Modifier = Modifier,
     peekHeight: Dp = 112.dp,
     halfFraction: Float = 0.5f,
-    fullFraction: Float = 0.94f,
+    fullFraction: Float = 1f,
     onDismiss: (() -> Unit)? = null,
     peek: @Composable () -> Unit,
     content: @Composable ColumnScope.(expanded: Boolean, dismiss: () -> Unit) -> Unit,
@@ -81,10 +81,10 @@ fun DraggableSheet(
         }
         // Report the visible height so the floating buttons can ride above the pane.
         SideEffect {
-            popoverVisibleFraction.floatValue = ((container - offset.value) / container).coerceIn(0f, 1f)
+            popoverVisibleHeight.floatValue = (container - offset.value).coerceAtLeast(0f)
         }
         DisposableEffect(Unit) {
-            onDispose { popoverVisibleFraction.floatValue = 0f }
+            onDispose { popoverVisibleHeight.floatValue = 0f }
         }
 
         Surface(
@@ -93,7 +93,7 @@ fun DraggableSheet(
                 .height(maxHeight)
                 .offset { IntOffset(0, offset.value.roundToInt()) },
             tonalElevation = 4.dp,
-            shape = MaterialTheme.shapes.extraLarge,
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         ) {
             Column(Modifier.fillMaxWidth().height(maxHeight)) {
                 // Only the header starts a drag, so lists below stay scrollable.

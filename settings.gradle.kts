@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "EMT-Valencia-Native"
 include(":app")
+include(":wear")

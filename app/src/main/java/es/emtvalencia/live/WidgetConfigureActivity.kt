@@ -65,6 +65,8 @@ class WidgetConfigureActivity : ComponentActivity() {
                                         .putInt("widget_${widgetId}_stop", stop.id)
                                         .putString("widget_${widgetId}_name", cleanStopName(stop.name))
                                         .putString("widget_${widgetId}_network", Network.Emt.name)
+                                        .putFloat("widget_${widgetId}_lat", stop.lat.toFloat())
+                                        .putFloat("widget_${widgetId}_lon", stop.lon.toFloat())
                                         .apply()
                                     setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId))
                                     finish()

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">EMT València</string>
+    <string name="app_name">OpenTransport Valencia</string>
     <string name="widget_choose_stop">Choose a stop</string>
     <string name="widget_tap_to_configure">Tap to configure</string>
     <string name="widget_no_buses">No buses right now</string>

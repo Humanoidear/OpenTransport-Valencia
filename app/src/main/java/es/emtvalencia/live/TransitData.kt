@@ -42,7 +42,20 @@ data class BusPosition(
 data class Arrival(val line: String, val destination: String, val minutes: String, val arrivalTime: String = "", val source: String = "emt")
 data class NearBus(val line: String, val number: Int, val lat: Double, val lon: Double, val direction: String?, val minutes: Int, val distanceMeters: Double)
 data class StopInfo(val stop: Stop, val arrivals: List<Arrival>, val buses: List<NearBus>)
-data class Incident(val title: String, val date: String, val lines: Set<String>, val network: Network = Network.Emt)
+data class Incident(
+    val title: String,
+    val date: String,
+    val lines: Set<String>,
+    val network: Network = Network.Emt,
+    val detail: String = "",
+    val url: String = "",
+)
+
+/** One docked Valenbisi bike: which stand, its type and its user rating. */
+data class Bike(val number: Int, val stand: Int, val type: String, val rating: Double, val ratings: Int)
+
+/** One scheduled Metrobús departure in the day's timetable. */
+data class MetrobusTime(val hour: Int, val minute: Int, val line: String, val destination: String)
 
 /** The networks the app can draw on the map. */
 enum class Network(val label: String) {
@@ -50,6 +63,7 @@ enum class Network(val label: String) {
     Metro("Metro"),
     Valenbisi("Bici"),
     Metrobus("Metrobús"),
+    Rodalies("Rodalies"),
 }
 
 /**
@@ -67,6 +81,8 @@ data class Place(
     val available: Int = -1,
     val free: Int = -1,
     val open: Boolean = true,
+    val mechanical: Int = -1,
+    val electric: Int = -1,
 )
 
 /** Screen-space friendly bounds used for fitting the camera to a stop's lines. */
@@ -101,7 +117,13 @@ object TransitDataLoader {
         // Metrovalencia: merge its stations and route shapes into the same graph
         // so the planner can route over them like EMT stops.
         val (metroStops, metroRoutes) = loadMetro(context)
-        val allStops = stops + metroStops
+        // Some EMT stops are physically Metro stations (same name): flag them so
+        // they're drawn/served as Metro, never as EMT points.
+        val metroNames = metroStops.map { it.name.lowercase() }.toSet()
+        val taggedStops = stops.map { stop ->
+            if (stop.name.lowercase() in metroNames) stop.copy(metro = true) else stop
+        }
+        val allStops = taggedStops + metroStops
         return TransitData(allStops, allStops.associateBy { it.id.toString() }, routes + metroRoutes)
     }
 

@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.graphics.BitmapFactory
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -13,9 +14,11 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -23,6 +26,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -36,6 +40,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -43,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -101,8 +108,9 @@ private fun stopKey(id: Int) = "emt-$id"
 @Composable
 fun EmtApp() {
     val context = LocalContext.current
-    val transit = remember { TransitDataLoader.load(context) }
-    val repository = remember { EmtRepository(transit) }
+    var transit by remember { mutableStateOf(TransitDataLoader.load(context)) }
+    val repository = remember(transit) { EmtRepository(transit) }
+    LaunchedEffect(repository) { repository.attach(context) }
 
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var currentLine by remember { mutableStateOf<String?>(null) }
@@ -132,12 +140,58 @@ fun EmtApp() {
     var places by remember { mutableStateOf<List<Place>>(emptyList()) }
     var enabledNetworks by remember { mutableStateOf(setOf(Network.Emt, Network.Metro, Network.Valenbisi)) }
     var selectedPlace by remember { mutableStateOf<Place?>(null) }
+    var metrobusRoutes by remember { mutableStateOf("{\"type\":\"FeatureCollection\",\"features\":[]}") }
+    var metrobusStopLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var showLayers by remember { mutableStateOf(false) }
+    var showNearby by remember { mutableStateOf(false) }
+    var nearbyDismissed by remember { mutableStateOf(false) }
+    var planUnlocked by remember { mutableStateOf(false) }
+    var planTaps by remember { mutableStateOf(0) }
     var savedService by remember { mutableStateOf<Network?>(null) }
     var alertsService by remember { mutableStateOf<Network?>(null) }
     var planModes by remember { mutableStateOf(setOf(Network.Emt)) }
     var language by remember { mutableStateOf(loadLanguage(context)) }
+    val prefs = remember { context.getSharedPreferences("emt", Context.MODE_PRIVATE) }
+    var onboardingDone by remember { mutableStateOf(prefs.getBoolean("onboarded", false)) }
+    var themeMode by remember { mutableStateOf(prefs.getString("theme", "system") ?: "system") }
+    var mapType by remember { mutableStateOf(prefs.getString("maptype", "default") ?: "default") }
+    SideEffect { themeOverride = themeMode }
     SideEffect { currentStrings.value = Strings(language) }
+    var pins by remember { mutableStateOf(prefs.getStringSet("pins", emptySet()).orEmpty().toSet()) }
+    var alertMinutes by remember { mutableIntStateOf(prefs.getInt("alert_minutes", 10)) }
+
+    // Notify when a pinned line is within the configured minutes of its stop.
+    LaunchedEffect(pins, alertMinutes) {
+        val notified = HashMap<String, Long>()
+        while (true) {
+            pins.forEach { pin ->
+                val minutes: Int? = if (pin.startsWith("mb-")) {
+                    val code = pin.substring(3).substringBefore(":")
+                    val line = pin.substringAfterLast(":")
+                    runCatching { repository.metrobusOccupancy(code) }.getOrDefault(emptyList())
+                        .firstOrNull { it.line == line }
+                        ?.let { Regex("^(\\d+)").find(it.minutes)?.groupValues?.get(1)?.toIntOrNull() }
+                } else {
+                    val parts = pin.split(":")
+                    val stopId = parts.getOrNull(0)?.toIntOrNull()
+                    val line = parts.getOrNull(1)
+                    if (stopId == null || line == null) null else runCatching { repository.nextBus(stopId, line) }.getOrNull()
+                }
+                val line = pin.substringAfterLast(":")
+                if (minutes != null && minutes in 1..alertMinutes && System.currentTimeMillis() - (notified[pin] ?: 0L) > 10 * 60_000) {
+                    val stopName = if (pin.startsWith("mb-")) {
+                        places.firstOrNull { it.id == pin.substringBeforeLast(":") }?.name
+                    } else {
+                        transit.stopsById[pin.substringBeforeLast(":")]?.let { cleanStopName(it.name) }
+                    }.orEmpty()
+                    val network = if (pin.startsWith("mb-")) Network.Metrobus else Network.Emt
+                    Notifier.arrival(context, pin.hashCode(), line, network, stopName.ifBlank { pin.substringBeforeLast(":") }, minutes)
+                    notified[pin] = System.currentTimeMillis()
+                }
+            }
+            delay(60_000)
+        }
+    }
 
     val scope = rememberCoroutineScope()
     val planner = remember(transit, repository) {
@@ -154,13 +208,37 @@ fun EmtApp() {
     val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         hasLocationPermission = granted
     }
+    // Opened from the widget: jump straight to that stop.
+    LaunchedEffect(Unit) {
+        val stopId = (context as? android.app.Activity)?.intent?.getIntExtra("widget_stop", -1) ?: -1
+        if (stopId > 0) {
+            transit.stopsById[stopId.toString()]?.let { stop ->
+                selectedStop = stop
+                selectedPlace = null
+                stopInfo = null
+                followedBus = null
+                followedLine = null
+                currentLine = null
+                tab = 0
+            }
+        }
+    }
+
+    val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     LaunchedEffect(Unit) {
         if (!hasLocationPermission) runCatching { locationLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION) }
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            runCatching { notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+        }
     }
     LaunchedEffect(mapController, hasLocationPermission) {
         if (hasLocationPermission) {
-            lastKnownLocation(context)?.let { userLocation = it }
+            currentLocation(context)?.let { userLocation = it }
         }
+    }
+    // On first fix, pop the "stops near me" peek (until the user closes it).
+    LaunchedEffect(userLocation) {
+        if (userLocation != null && !nearbyDismissed && tab == 0) showNearby = true
     }
 
     // Keep the "you are here" dot fresh; the lookup stays off the main thread.
@@ -170,8 +248,10 @@ fun EmtApp() {
             return@LaunchedEffect
         }
         while (true) {
-            withContext(Dispatchers.IO) { runCatching { lastKnownLocation(context) }.getOrNull() }
-                ?.let { userLocation = it }
+            currentLocation(context)?.let {
+                userLocation = it
+                prefs.edit().putFloat("last_lat", it.lat.toFloat()).putFloat("last_lon", it.lon.toFloat()).apply()
+            }
             delay(10_000)
         }
     }
@@ -208,14 +288,67 @@ fun EmtApp() {
 
     LaunchedEffect(Unit) {
         val emt = runCatching { repository.incidents() }.getOrDefault(emptyList())
-        val metro = runCatching { repository.metroIncidents() }.getOrDefault(emptyList())
-        incidents = emt + metro
+        val fgv = runCatching { repository.fgvIncidents() }.getOrDefault(emptyList())
+        val metrobus = runCatching { repository.metrobusIncidents() }.getOrDefault(emptyList())
+        val rodalies = runCatching { repository.rodaliesIncidents() }.getOrDefault(emptyList())
+        incidents = emt + fgv + metrobus + rodalies
     }
 
     // Metrovalencia stations load once; Valenbisi availability refreshes on a timer.
     LaunchedEffect(Unit) {
         val stations = runCatching { repository.metroStations() }.getOrDefault(emptyList())
         if (stations.isNotEmpty()) places = places.filterNot { it.network == Network.Metro } + stations
+    }
+    // Rodalies stations + routes, bundled in assets/rodalies.geojson.
+    LaunchedEffect(Unit) {
+        val (stops, routes) = runCatching { repository.rodaliesNetwork(3_000_000) }.getOrDefault(emptyList<Stop>() to emptyMap())
+        if (stops.isNotEmpty()) {
+            val allStops = transit.stops + stops
+            transit = transit.copy(stops = allStops, stopsById = allStops.associateBy { it.id.toString() }, routes = transit.routes + routes)
+            places = places.filterNot { it.network == Network.Rodalies } +
+                stops.map { Place("rd-${it.id}", Network.Rodalies, it.name, it.lat, it.lon, it.lines, detail = "Rodalies") }        }
+    }
+    suspend fun loadMetrobus() {
+        val anchor = userLocation ?: VALENCIA_CENTRE
+        val stops = runCatching { repository.metrobusStops(anchor.lat, anchor.lon) }.getOrDefault(emptyList())
+        if (stops.isNotEmpty()) places = places.filterNot { it.network == Network.Metrobus } + stops
+    }
+    // Fold Metrobús stops/routes into the planner graph once loaded.
+    LaunchedEffect(Unit) {
+        val (stops, routes) = runCatching { repository.metrobusNetwork(2_000_000) }.getOrDefault(emptyList<Stop>() to emptyMap())
+        if (stops.isNotEmpty()) {
+            val allStops = transit.stops + stops
+            transit = transit.copy(stops = allStops, stopsById = allStops.associateBy { it.id.toString() }, routes = transit.routes + routes)
+        }
+    }
+    // A selected Metrobús stop fetches its lines, then just those routes' shapes.
+    LaunchedEffect(selectedPlace) {
+        val place = selectedPlace
+        // Clear immediately (synchronously), so a late network reply can't leave
+        // stale lines after the pane is closed or another stop selected.
+        metrobusStopLines = emptyList()
+        metrobusRoutes = "{\"type\":\"FeatureCollection\",\"features\":[]}"
+        if (place != null && place.network == Network.Metrobus) {
+            val code = place.id.removePrefix("mb-")
+            val lines = runCatching { repository.metrobusOccupancy(code) }.getOrDefault(emptyList())
+                .map { it.line }
+                .filter { it.startsWith("MB") }
+                .distinct()
+            val routes = repository.metrobusRoutesForLines(lines)
+            if (selectedPlace?.id == place.id) {
+                metrobusStopLines = lines
+                metrobusRoutes = routes
+            }
+        }
+    }
+    // Metrobús has no bulk endpoint: load it around the user (or the city centre),
+    // and refresh it periodically.
+    LaunchedEffect(userLocation) { loadMetrobus() }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(5 * 60_000)
+            loadMetrobus()
+        }
     }
     LaunchedEffect(Unit) {
         while (true) {
@@ -249,11 +382,20 @@ fun EmtApp() {
     }
 
     val scheme = MaterialTheme.colorScheme
-    val contextLines = selectedStop?.lines.orEmpty()
+    // A selected stop's lines, or a selected Rodalies/place station's lines, draw
+    // their route shapes through the context layer.
+    val contextLines = (selectedStop?.lines ?: selectedPlace?.lines).orEmpty()
+    // The 3D buildings follow the basemap, not the app theme.
+    val mapDark = when (mapType) {
+        "light" -> false
+        "dark" -> true
+        "satellite" -> true
+        else -> isSystemInDarkTheme()
+    }
     val mapColors = MapColors(
         stopFill = scheme.onSurfaceVariant.toArgb(),
         stopStroke = scheme.surface.toArgb(),
-        building = scheme.surfaceVariant.toArgb(),
+        building = if (mapDark) 0xFF3A3F44.toInt() else 0xFFE6E1DA.toInt(),
         // Distinct colour per line crossing the selected stop, not hash-based
         // (which could give two lines the same colour).
         routes = contextLines.distinct()
@@ -265,24 +407,85 @@ fun EmtApp() {
         busHalo = scheme.scrim.toArgb(),
     )
 
+    // Back closes the topmost pane (or returns to the map) before leaving the app.
+    BackHandler(
+        enabled = searchActive || pickFor != null || showLayers ||
+            selectedStop != null || selectedPlace != null || followedBus != null ||
+            currentLine != null || plannedOption != null || tab != 0,
+    ) {
+        when {
+            searchActive -> { searchActive = false; query = "" }
+            pickFor != null -> pickFor = null
+            showLayers -> showLayers = false
+            selectedPlace != null -> {
+                selectedPlace = null
+                metrobusStopLines = emptyList()
+                metrobusRoutes = "{\"type\":\"FeatureCollection\",\"features\":[]}"
+            }
+            selectedStop != null -> { selectedStop = null; stopInfo = null }
+            followedBus != null -> { followedBus = null; followedLine = null }
+            plannedOption != null -> {
+                plannedOption = null
+                plannedJourney = emptyList()
+                plannedJourneyStops = emptyList()
+                plannedStopIds = emptySet()
+            }
+            currentLine != null -> currentLine = null
+            else -> tab = 0
+        }
+    }
+
+    if (!onboardingDone) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Onboarding(
+                language = language,
+                onLanguage = { language = it; saveLanguage(context, it) },
+                theme = themeMode,
+                onTheme = { themeMode = it; prefs.edit().putString("theme", it).apply() },
+                mapType = mapType,
+                onMapType = { mapType = it; prefs.edit().putString("maptype", it).apply() },
+                networks = enabledNetworks,
+                onToggleNetwork = { network ->
+                    enabledNetworks = if (network in enabledNetworks) enabledNetworks - network else enabledNetworks + network
+                },
+                onDone = { onboardingDone = true; prefs.edit().putBoolean("onboarded", true).apply() },
+            )
+        }
+        return
+    }
+
     Scaffold(
         bottomBar = {
             NavigationBar {
+                // Switching tabs closes every open pane so the map stays clean.
+                fun goTo(target: Int) {
+                    tab = target
+                    if (target != 0) {
+                        searchActive = false
+                        selectedStop = null
+                        stopInfo = null
+                        selectedPlace = null
+                        followedBus = null
+                        followedLine = null
+                        currentLine = null
+                        plannedOption = null
+                    }
+                }
                 NavigationBarItem(
                     selected = tab == 0,
-                    onClick = { tab = 0 },
+                    onClick = { goTo(0) },
                     icon = { Icon(Icons.Filled.Map, contentDescription = null) },
                     label = { Text(currentStrings.value.map) },
                 )
                 NavigationBarItem(
                     selected = tab == 1,
-                    onClick = { tab = 1 },
+                    onClick = { goTo(1) },
                     icon = { Icon(Icons.Filled.Star, contentDescription = null) },
                     label = { Text(currentStrings.value.saved) },
                 )
                 NavigationBarItem(
                     selected = tab == 2,
-                    onClick = { tab = 2 },
+                    onClick = { goTo(2) },
                     icon = {
                         if (incidents.isEmpty()) {
                             Icon(Icons.Filled.Warning, contentDescription = null)
@@ -294,15 +497,21 @@ fun EmtApp() {
                     },
                     label = { Text(currentStrings.value.alerts) },
                 )
-                NavigationBarItem(
-                    selected = tab == 3,
-                    onClick = { tab = 3 },
-                    icon = { Icon(Icons.Filled.Route, contentDescription = null) },
-                    label = { Text(currentStrings.value.plan) },
-                )
+                if (planUnlocked) {
+                    NavigationBarItem(
+                        selected = tab == 3,
+                        onClick = { goTo(3) },
+                        icon = {
+                            BadgedBox(badge = { Badge { Text("BETA") } }) {
+                                Icon(Icons.Filled.Route, contentDescription = null)
+                            }
+                        },
+                        label = { Text(currentStrings.value.plan) },
+                    )
+                }
                 NavigationBarItem(
                     selected = tab == 4,
-                    onClick = { tab = 4 },
+                    onClick = { goTo(4) },
                     icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                     label = { Text(currentStrings.value.settings) },
                 )
@@ -332,7 +541,10 @@ fun EmtApp() {
                     selectedStop != null -> emptyList()
                     else -> visiblePlaces
                 },
+                allPlaces = places,
                 metroLines = selectedPlace?.takeIf { it.network == Network.Metro }?.lines.orEmpty(),
+                metrobusRoutes = if (Network.Metrobus in enabledNetworks) metrobusRoutes else "{\"type\":\"FeatureCollection\",\"features\":[]}",
+                metrobusLines = metrobusStopLines,
                 enabledNetworks = enabledNetworks,
                 onPlaceTap = { place ->
                     selectedPlace = place
@@ -341,9 +553,12 @@ fun EmtApp() {
                     followedBus = null
                     followedLine = null
                     currentLine = null
+                    showNearby = false
+                    nearbyDismissed = true
                 },
                 onZoomTo = { point -> mapController?.moveCamera(point, 16.5, duration = 700) },
                 darkTheme = isSystemInDarkTheme(),
+                mapType = mapType,
                 query = query,
                 onQueryChange = { value ->
                     query = value
@@ -359,6 +574,8 @@ fun EmtApp() {
                     followedLine = null
                     currentLine = null
                     searchActive = false
+                    showNearby = false
+                    nearbyDismissed = true
                 },
                 onBusTap = { number ->
                     followedBus = number
@@ -380,6 +597,7 @@ fun EmtApp() {
                     tilt = false
                 },
                 onShowLayers = { showLayers = true },
+                onRecenter = { showNearby = true; nearbyDismissed = false },
                 onLocated = { point ->
                     point?.let {
                         userLocation = it
@@ -395,6 +613,12 @@ fun EmtApp() {
                     currentLine = line
                     tab = 0
                     transit.routes[line]?.let { route -> lineBounds(route)?.let { mapController?.fit(it, 240) } }
+                },
+                onMapTap = {
+                    if (!planUnlocked) {
+                        planTaps += 1
+                        if (planTaps >= 5) planUnlocked = true
+                    }
                 },
             )
 
@@ -421,11 +645,32 @@ fun EmtApp() {
                                 mapController?.moveCamera(LonLat(place.lon, place.lat), 16.0, duration = 700)
                             },
                             onRemove = { key -> favorites = favorites - key; saveFavorites(context, favorites) },
+                            nextArrival = { key ->
+                                when {
+                                    key.startsWith("emt-") -> {
+                                        val id = key.removePrefix("emt-").toIntOrNull()
+                                        val info = if (id != null) runCatching { repository.stop(id) }.getOrNull() else null
+                                        info?.arrivals?.firstOrNull()?.let { "${it.line} · ${repository.etaLabel(it)}" }
+                                    }
+                                    key.startsWith("mb-") -> {
+                                        val code = key.substring(3).substringBefore(":")
+                                        runCatching { repository.metrobusOccupancy(code) }.getOrNull()
+                                            ?.firstOrNull()?.let { "${it.line} · ${it.minutes}" }
+                                    }
+                                    else -> null
+                                }
+                            },
                         )
                         2 -> AlertsTab(incidents, alertsService, { alertsService = it })
                         4 -> SettingsTab(
                             language = language,
                             onLanguage = { language = it; saveLanguage(context, it) },
+                            theme = themeMode,
+                            onTheme = { themeMode = it; prefs.edit().putString("theme", it).apply() },
+                            mapType = mapType,
+                            onMapType = { mapType = it; prefs.edit().putString("maptype", it).apply() },
+                            alertMinutes = alertMinutes,
+                            onAlertMinutes = { alertMinutes = it; prefs.edit().putInt("alert_minutes", it).apply() },
                         )
                         else -> PlanTab(
                             from = planFrom,
@@ -435,8 +680,10 @@ fun EmtApp() {
                             onPickFrom = { pickFor = "from" },
                             onPickTo = { pickFor = "to" },
                             onUseLocation = {
-                                lastKnownLocation(context)?.let { located ->
-                                    planFrom = Stop(-1, "My location", emptyList(), located.lat, located.lon)
+                                scope.launch {
+                                    currentLocation(context)?.let { located ->
+                                        planFrom = Stop(-1, "My location", emptyList(), located.lat, located.lon)
+                                    }
                                 }
                             },
                             onPlan = {
@@ -490,6 +737,12 @@ fun EmtApp() {
                         saveFavorites(context, favorites)
                     },
                     etaLabel = { a -> repository.etaLabel(a) },
+                    distanceFromUser = userLocation?.let { TransitMotion.distanceMeters(it, LonLat(stop.lon, stop.lat)) },
+                    isPinned = { pin -> pin in pins },
+                    onTogglePin = { pin ->
+                        pins = if (pin in pins) pins - pin else pins + pin
+                        prefs.edit().putStringSet("pins", pins).apply()
+                    },
                     onSelectLine = { line ->
                         currentLine = if (currentLine == line) null else line
                         selectedStop = null
@@ -509,6 +762,16 @@ fun EmtApp() {
                     transit = transit,
                     busStore = busStore,
                     busNumber = followedBus!!,
+                    threeD = tilt,
+                    onToggle3D = {
+                        tilt = !tilt
+                        mapController?.followPitch = if (tilt) 58.0 else 0.0
+                    },
+                    isPinned = { pin -> pin in pins },
+                    onTogglePin = { pin ->
+                        pins = if (pin in pins) pins - pin else pins + pin
+                        prefs.edit().putStringSet("pins", pins).apply()
+                    },
                     onDismiss = { followedBus = null; followedLine = null },
                 )
             }
@@ -528,14 +791,43 @@ fun EmtApp() {
                 )
             }
 
-            // The line pane yields to the bus pane while a bus is being followed.
             if (followedBus == null) currentLine?.let { line ->
                 LineSheet(
                     modifier = Modifier.align(Alignment.BottomCenter),
                     transit = transit,
                     busStore = busStore,
                     line = line,
+                    onOpenStop = { opened ->
+                        selectedStop = opened
+                        stopInfo = null
+                        currentLine = null
+                        tab = 0
+                    },
                     onDismiss = { currentLine = null },
+                )
+            }
+
+            if (showNearby) {
+                NearbySheet(
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                    user = userLocation,
+                    stops = transit.stops,
+                    places = places,
+                    onOpenStop = { stop ->
+                        showNearby = false
+                        nearbyDismissed = true
+                        selectedStop = stop
+                        selectedPlace = null
+                        stopInfo = null
+                    },
+                    onOpenPlace = { place ->
+                        showNearby = false
+                        nearbyDismissed = true
+                        selectedPlace = place
+                        selectedStop = null
+                        stopInfo = null
+                    },
+                    onDismiss = { showNearby = false; nearbyDismissed = true },
                 )
             }
 
@@ -544,12 +836,25 @@ fun EmtApp() {
                     modifier = Modifier.align(Alignment.BottomCenter),
                     place = place,
                     arrivals = { id -> repository.metroArrivals(id) },
+                    metrobusArrivals = { code -> repository.metrobusOccupancy(code) },
+                    metrobusSchedule = { code -> repository.metrobusSchedule(code) },
+                    valenbisiBikes = { number -> repository.valenbisiBikes(number) },
+                    rodaliesTimes = { name -> repository.rodaliesTimes(name) },
                     isFavorite = favorites.contains(place.id),
                     onToggleFavorite = {
                         favorites = if (favorites.contains(place.id)) favorites - place.id else favorites + place.id
                         saveFavorites(context, favorites)
                     },
-                    onDismiss = { selectedPlace = null },
+                    isPinned = { pin -> pin in pins },
+                    onTogglePin = { pin ->
+                        pins = if (pin in pins) pins - pin else pins + pin
+                        prefs.edit().putStringSet("pins", pins).apply()
+                    },
+                    onDismiss = {
+                        selectedPlace = null
+                        metrobusStopLines = emptyList()
+                        metrobusRoutes = "{\"type\":\"FeatureCollection\",\"features\":[]}"
+                    },
                 )
             }
         }
@@ -571,6 +876,8 @@ fun EmtApp() {
                 onToggle = { network ->
                     enabledNetworks = if (network in enabledNetworks) enabledNetworks - network else enabledNetworks + network
                 },
+                mapType = mapType,
+                onMapType = { mapType = it; prefs.edit().putString("maptype", it).apply() },
                 onDismiss = { showLayers = false },
             )
         }
@@ -591,11 +898,15 @@ private fun MapTab(
     journeyStops: List<JourneyStop>,
     journeyStopIds: Set<Int>,
     places: List<Place>,
+    allPlaces: List<Place>,
     metroLines: List<String>,
+    metrobusRoutes: String,
+    metrobusLines: List<String>,
     enabledNetworks: Set<Network>,
     onPlaceTap: (Place) -> Unit,
     onZoomTo: (LonLat) -> Unit,
     darkTheme: Boolean,
+    mapType: String,
     query: String,
     onQueryChange: (String) -> Unit,
     searchActive: Boolean,
@@ -608,7 +919,9 @@ private fun MapTab(
     onLocated: (LonLat?) -> Unit,
     onResetView: () -> Unit,
     onShowLayers: () -> Unit,
+    onRecenter: () -> Unit,
     onLinePick: (String) -> Unit,
+    onMapTap: () -> Unit,
 ) {
     val context = LocalContext.current
     var hasLocationPermission by remember {
@@ -617,9 +930,10 @@ private fun MapTab(
                 PackageManager.PERMISSION_GRANTED,
         )
     }
+    val scope = rememberCoroutineScope()
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         hasLocationPermission = granted
-        if (granted) onLocated(lastKnownLocation(context))
+        if (granted) scope.launch { onLocated(currentLocation(context)) }
     }
     val stopResults = remember(query, transit) {
         if (query.isBlank()) emptyList() else searchStops(transit.stops, query)
@@ -651,16 +965,24 @@ private fun MapTab(
             journeyStops = journeyStops,
             places = if (journey.isNotEmpty()) emptyList() else places,
             metroLines = metroLines,
+            metrobusRoutes = metrobusRoutes,
+            metrobusLines = metrobusLines,
         )
         TransitMap(
             modifier = Modifier.fillMaxSize(),
-            styleUrl = if (darkTheme) DARK_STYLE else LIGHT_STYLE,
+            styleUrl = when (mapType) {
+                "light" -> STYLE_LIGHT
+                "dark" -> STYLE_DARK
+                "satellite" -> SATELLITE_STYLE
+                else -> if (darkTheme) STYLE_DARK else STYLE_LIGHT
+            },
             colors = mapColors,
             data = mapData,
             onStopTap = onStopTap,
             onBusTap = onBusTap,
             onPlaceTap = onPlaceTap,
             onViewport = onViewport,
+            onBlankTap = onMapTap,
             onReady = onController,
         )
 
@@ -703,7 +1025,7 @@ private fun MapTab(
             Modifier
                 .align(Alignment.BottomEnd)
                 .padding(16.dp)
-                .offset(y = -(LocalConfiguration.current.screenHeightDp * popoverVisibleFraction.floatValue).dp),
+                .offset(y = -with(LocalDensity.current) { popoverVisibleHeight.floatValue.toDp() }),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             FilledTonalIconButton(onClick = onShowLayers) {
@@ -713,8 +1035,13 @@ private fun MapTab(
                 Icon(Icons.Filled.ViewInAr, contentDescription = "3D perspective")
             }
             SmallFloatingActionButton(onClick = {
-                if (hasLocationPermission) onLocated(lastKnownLocation(context)) else launcher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-            }            ) {
+                if (hasLocationPermission) {
+                    scope.launch { onLocated(currentLocation(context)) }
+                    onRecenter()
+                } else {
+                    launcher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                }
+            }) {
                 Icon(Icons.Filled.MyLocation, contentDescription = "My location")
             }
         }
@@ -725,12 +1052,12 @@ private fun MapTab(
             exit = fadeOut(tween(150)) + shrinkVertically(tween(200), shrinkTowards = Alignment.Top),
         ) {
             // Full-screen search: pick a medium, then a stop or station.
-            val placeHits = remember(places, query, searchMedium, byLine) {
+            val placeHits = remember(allPlaces, query, searchMedium, byLine) {
                 val term = query.trim().lowercase(Locale.ROOT)
                 if (byLine || term.isEmpty()) {
                     emptyList()
                 } else {
-                    places.filter {
+                    allPlaces.filter {
                         (searchMedium == null || it.network == searchMedium) &&
                             it.name.lowercase(Locale.ROOT).contains(term)
                     }.take(40)
@@ -815,6 +1142,19 @@ private fun MapTab(
             }
         }
     }
+}
+
+private suspend fun currentLocation(context: Context): LonLat? {
+    val granted = androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED ||
+        androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED
+    if (!granted) return null
+    return runCatching {
+        com.google.android.gms.location.LocationServices.getFusedLocationProviderClient(context)
+            .lastLocation.await()
+            ?.let { LonLat(it.longitude, it.latitude) }
+    }.getOrNull()
 }
 
 private fun lastKnownLocation(context: Context): LonLat? {
@@ -904,6 +1244,7 @@ private fun StopSearchField(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun StopSheet(
     modifier: Modifier,
@@ -915,12 +1256,18 @@ private fun StopSheet(
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
     etaLabel: (Arrival) -> String,
+    distanceFromUser: Double?,
+    isPinned: (String) -> Boolean,
+    onTogglePin: (String) -> Unit,
     onSelectLine: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var updatesOpen by remember { mutableStateOf(true) }
+    var menuIndex by remember { mutableStateOf<Int?>(null) }
+    val clipboard = LocalClipboardManager.current
     val arrivals = info?.arrivals.orEmpty()
     val relevant = stop.lines.mapNotNull { line -> incidents.firstOrNull { line.uppercase() in it.lines } }
+    val shareContext = LocalContext.current
 
     DraggableSheet(
         modifier = modifier.fillMaxHeight(),
@@ -935,6 +1282,14 @@ private fun StopSheet(
                     Text(cleanStopName(stop.name), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(stop.id.toString(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        distanceFromUser?.let {
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                TransitMotion.formatDistance(it),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                         Spacer(Modifier.width(8.dp))
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             items(stop.lines) { line -> SmallLineBadge(line) }
@@ -948,6 +1303,9 @@ private fun StopSheet(
                         contentDescription = if (isFavorite) "Remove favourite" else "Add favourite",
                         tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+                IconButton(onClick = { shareContext.openInMaps(stop.lat, stop.lon, cleanStopName(stop.name)) }) {
+                    Icon(Icons.Filled.Map, contentDescription = "Open in Maps")
                 }
             }
 
@@ -1007,38 +1365,76 @@ private fun StopSheet(
                     }
                     Spacer(Modifier.height(10.dp))
                     LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        items(arrivals) { arrival ->
+                        itemsIndexed(arrivals) { index, arrival ->
                             val selectedRow = currentLine == arrival.line
                             val near = info?.buses?.firstOrNull { it.line == arrival.line }
-                            Surface(
-                                onClick = { onSelectLine(arrival.line) },
-                                color = if (selectedRow) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
-                                shape = MaterialTheme.shapes.large,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    LineBadge(arrival.line)
-                                    Spacer(Modifier.width(12.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            arrival.destination.ifBlank { arrival.line },
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            style = MaterialTheme.typography.titleSmall,
-                                        )
-                                        if (near != null) {
+                            Box {
+                                Surface(
+                                    color = if (selectedRow) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                                    shape = MaterialTheme.shapes.large,
+                                    modifier = Modifier.fillMaxWidth().combinedClickable(
+                                        onClick = { onSelectLine(arrival.line) },
+                                        onLongClick = { menuIndex = index },
+                                    ),
+                                ) {
+                                    Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        LineBadge(arrival.line)
+                                        Spacer(Modifier.width(12.dp))
+                                        Column(Modifier.weight(1f)) {
                                             Text(
-                                                "Bus ${near.number} · ${TransitMotion.formatDistance(near.distanceMeters * 1000)}",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                arrival.destination.ifBlank { arrival.line },
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = MaterialTheme.typography.titleSmall,
+                                            )
+                                            if (near != null) {
+                                                Text(
+                                                    "Bus ${near.number} · ${TransitMotion.formatDistance(near.distanceMeters * 1000)}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        }
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            etaLabel(arrival),
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                        IconButton(onClick = { onTogglePin("${stop.id}:${arrival.line}") }) {
+                                            val pinned = isPinned("${stop.id}:${arrival.line}")
+                                            Icon(
+                                                if (pinned) Icons.Filled.NotificationsActive else Icons.Filled.NotificationsNone,
+                                                contentDescription = "Alert this line",
+                                                tint = if (pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
                                         }
                                     }
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        etaLabel(arrival),
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.primary,
+                                }
+                                DropdownMenu(
+                                    expanded = menuIndex == index,
+                                    onDismissRequest = { menuIndex = null },
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Alert this line") },
+                                        leadingIcon = { Icon(Icons.Filled.NotificationsNone, contentDescription = null) },
+                                        onClick = { onTogglePin("${stop.id}:${arrival.line}"); menuIndex = null },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Open stop in Maps") },
+                                        leadingIcon = { Icon(Icons.Filled.Map, contentDescription = null) },
+                                        onClick = {
+                                            shareContext.openInMaps(stop.lat, stop.lon, cleanStopName(stop.name))
+                                            menuIndex = null
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Copy line") },
+                                        leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
+                                        onClick = {
+                                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(arrival.line))
+                                            menuIndex = null
+                                        },
                                     )
                                 }
                             }
@@ -1079,12 +1475,17 @@ private fun MiniLineBadge(line: String, minutes: String) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FollowSheet(
     modifier: Modifier,
     transit: TransitData,
     busStore: BusStore,
     busNumber: Int,
+    threeD: Boolean,
+    onToggle3D: () -> Unit,
+    isPinned: (String) -> Boolean,
+    onTogglePin: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val bus = busStore.buses.firstOrNull { it.number == busNumber }
@@ -1096,6 +1497,8 @@ private fun FollowSheet(
         )
     }
     val next = upcoming.firstOrNull()
+    var menu by remember { mutableStateOf(false) }
+    val shareContext = LocalContext.current
 
     DraggableSheet(
         modifier = modifier.fillMaxHeight(),
@@ -1109,15 +1512,42 @@ private fun FollowSheet(
                 return@Column
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Bus ${bus.number}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "${bus.direction ?: "?"} · ${bus.destination}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                Box {
+                    Row(
+                        Modifier.combinedClickable(onClick = {}, onLongClick = { menu = true }),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Bus ${bus.number}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "${bus.direction ?: "?"} · ${bus.destination}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Stop following") },
+                            leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
+                            onClick = { menu = false; onDismiss() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Alert at next stop") },
+                            leadingIcon = { Icon(Icons.Filled.NotificationsNone, contentDescription = null) },
+                            onClick = { onTogglePin("${bus.nextStop}:${bus.line}"); menu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Open position in Maps") },
+                            leadingIcon = { Icon(Icons.Filled.Map, contentDescription = null) },
+                            onClick = {
+                                shareContext.openInMaps(bus.render.lat, bus.render.lon, "Bus ${bus.number}")
+                                menu = false
+                            },
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(4.dp))
@@ -1144,6 +1574,7 @@ private fun SavedTab(
     onOpenStop: (Stop) -> Unit,
     onOpenPlace: (Place) -> Unit,
     onRemove: (String) -> Unit,
+    nextArrival: suspend (String) -> String?,
 ) {
     val stops = remember(favorites, transit) {
         favorites.filter { it.startsWith("emt-") }.mapNotNull { transit.stopsById[it.removePrefix("emt-")] }
@@ -1158,29 +1589,77 @@ private fun SavedTab(
         } else {
             LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
                 items(stops.filter { service == null || service == Network.Emt }, key = { "s-${it.id}" }) { stop ->
-                    ListItem(
-                        headlineContent = { Text(cleanStopName(stop.name), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = { Text(stop.lines.joinToString(" · ")) },
-                        leadingContent = { ServiceLogo(Network.Emt, 22.dp) },
-                        trailingContent = {
-                            IconButton(onClick = { onRemove(stopKey(stop.id)) }) { Icon(Icons.Filled.Close, contentDescription = "Remove") }
-                        },
-                        modifier = Modifier.clickable { onOpenStop(stop) },
+                    SavedRow(
+                        rowKey = "s-${stop.id}",
+                        removeKey = stopKey(stop.id),
+                        onRemove = onRemove,
+                        nextArrival = nextArrival,
+                        onOpen = { onOpenStop(stop) },
+                        leading = { ServiceLogo(Network.Emt, 22.dp) },
+                        title = cleanStopName(stop.name),
+                        supporting = stop.lines.joinToString(" · "),
                     )
                 }
                 items(savedPlaces.filter { service == null || it.network == service }, key = { it.id }) { place ->
-                    ListItem(
-                        headlineContent = { Text(place.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = { Text(placeSubtitle(place)) },
-                        leadingContent = { ServiceLogo(place.network, 22.dp) },
-                        trailingContent = {
-                            IconButton(onClick = { onRemove(place.id) }) { Icon(Icons.Filled.Close, contentDescription = "Remove") }
-                        },
-                        modifier = Modifier.clickable { onOpenPlace(place) },
+                    SavedRow(
+                        rowKey = place.id,
+                        removeKey = place.id,
+                        onRemove = onRemove,
+                        nextArrival = nextArrival,
+                        onOpen = { onOpenPlace(place) },
+                        leading = { ServiceLogo(place.network, 22.dp) },
+                        title = place.name,
+                        supporting = placeSubtitle(place),
                     )
                 }
             }
         }
+    }
+}
+
+/** A saved row: shows the next arrival, and swipes away to remove. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SavedRow(
+    rowKey: String,
+    removeKey: String,
+    onRemove: (String) -> Unit,
+    nextArrival: suspend (String) -> String?,
+    onOpen: () -> Unit,
+    leading: @Composable () -> Unit,
+    title: String,
+    supporting: String,
+) {
+    var latest by remember(rowKey) { mutableStateOf<String?>(null) }
+    LaunchedEffect(rowKey) { latest = runCatching { nextArrival(removeKey) }.getOrNull() }
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = {
+            if (it != SwipeToDismissBoxValue.Settled) { onRemove(removeKey); true } else false
+        },
+    )
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = false,
+        backgroundContent = {
+            Box(
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Remove",
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(end = 20.dp),
+                )
+            }
+        },
+    ) {
+        ListItem(
+            headlineContent = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            supportingContent = { Text(latest?.let { "Next: $it" } ?: supporting) },
+            leadingContent = leading,
+            modifier = Modifier.clickable { onOpen() },
+        )
     }
 }
 
@@ -1190,6 +1669,7 @@ private fun AlertsTab(
     service: Network?,
     onService: (Network?) -> Unit,
 ) {
+    val context = LocalContext.current
     // Valenbisi has no alert feed; only operators that publish one appear.
     val shown = incidents.filter { service == null || it.network == service }
     Column(Modifier.fillMaxSize()) {
@@ -1199,20 +1679,35 @@ private fun AlertsTab(
         } else {
             LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
                 items(shown) { incident ->
+                    val supporting = buildString {
+                        if (incident.lines.isNotEmpty()) append("Lines ${incident.lines.joinToString(", ")}")
+                        if (incident.detail.isNotBlank()) {
+                            if (isNotEmpty()) append(" · ")
+                            append(incident.detail)
+                        }
+                        if (incident.date.isNotBlank()) {
+                            if (isNotEmpty()) append(" · ")
+                            append("since ${incident.date}")
+                        }
+                    }
                     ListItem(
                         headlineContent = { Text(incident.title) },
-                        supportingContent = {
-                            Text(
-                                buildString {
-                                    if (incident.lines.isNotEmpty()) append("Lines ${incident.lines.joinToString(", ")}")
-                                    if (incident.date.isNotBlank()) {
-                                        if (isNotEmpty()) append(" · ")
-                                        append("since ${incident.date}")
-                                    }
-                                },
-                            )
+                        supportingContent = { if (supporting.isNotBlank()) Text(supporting, maxLines = 3, overflow = TextOverflow.Ellipsis) },
+                        leadingContent = { ServiceLogo(incident.network, 24.dp) },
+                        trailingContent = if (incident.url.isNotBlank()) {
+                            { Icon(Icons.Filled.OpenInNew, contentDescription = "Open notice") }
+                        } else {
+                            null
                         },
-                        leadingContent = { Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary) },
+                        modifier = if (incident.url.isNotBlank()) {
+                            Modifier.clickable {
+                                runCatching {
+                                    context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(incident.url)))
+                                }
+                            }
+                        } else {
+                            Modifier
+                        },
                     )
                 }
             }
@@ -1230,9 +1725,48 @@ private fun EmptyState(icon: androidx.compose.ui.graphics.vector.ImageVector, me
     }
 }
 
+/** Opens a coordinate in a maps app: geo: first, then a Google Maps URL. */
+fun android.content.Context.openInMaps(lat: Double, lon: Double, label: String) {
+    val geo = android.net.Uri.parse("geo:$lat,$lon?q=$lat,$lon(${android.net.Uri.encode(label)})")
+    val geoIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, geo)
+    val webIntent = android.content.Intent(
+        android.content.Intent.ACTION_VIEW,
+        android.net.Uri.parse("https://www.google.com/maps/search/?api=1&query=$lat,$lon"),
+    )
+    runCatching { startActivity(geoIntent) }.onFailure {
+        runCatching { startActivity(webIntent) }
+    }
+}
+
 @Composable
 private fun LineBadge(line: String) {
-    if (line.startsWith("M") && line.drop(1).toIntOrNull() != null) {
+    // Rodalies (C1..C6) and Metrobús (MB…) are simple text pills; only EMT uses
+    // the image generator, and Metro uses the bundled PNGs.
+    if (line.startsWith("C") && line.length > 1 && line.drop(1).all { it.isDigit() }) {
+        Surface(color = Color(0xFFE30613), shape = RoundedCornerShape(6.dp)) {
+            Text(
+                line,
+                modifier = Modifier.height(24.dp).padding(horizontal = 8.dp).wrapContentHeight(),
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+        return
+    }
+    if (line.startsWith("MB")) {
+        Surface(color = Network.Metrobus.let { networkDot(it) }, shape = RoundedCornerShape(6.dp)) {
+            Text(
+                line.removePrefix("MB"),
+                modifier = Modifier.height(24.dp).padding(horizontal = 8.dp).wrapContentHeight(),
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+        return
+    }
+    if (line.startsWith("M") && line.length > 1 && line.drop(1).all { it.isDigit() }) {
         MetroBadge(line.drop(1))
         return
     }
@@ -1660,13 +2194,83 @@ private fun StatCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+/** Stops, stations and bike docks within a short walk, nearest first. */
+@Composable
+private fun NearbySheet(
+    modifier: Modifier,
+    user: LonLat?,
+    stops: List<Stop>,
+    places: List<Place>,
+    onOpenStop: (Stop) -> Unit,
+    onOpenPlace: (Place) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val radius = 200.0
+    data class Near(val name: String, val network: Network, val distance: Double, val open: () -> Unit)
+    val nearby = remember(user, stops, places) {
+        if (user == null) return@remember emptyList()
+        val out = mutableListOf<Near>()
+        stops.filter { !it.metro }.forEach { stop ->
+            val d = TransitMotion.distanceMeters(user, LonLat(stop.lon, stop.lat))
+            if (d <= radius) out += Near(cleanStopName(stop.name), Network.Emt, d, { onOpenStop(stop) })
+        }
+        places.forEach { place ->
+            val d = TransitMotion.distanceMeters(user, LonLat(place.lon, place.lat))
+            if (d <= radius) out += Near(place.name, place.network, d, { onOpenPlace(place) })
+        }
+        out.sortedBy { it.distance }.take(30)
+    }
+    DraggableSheet(
+        modifier = modifier.fillMaxHeight(),
+        peek = {},
+        onDismiss = onDismiss,
+    ) { _, _ ->
+        Column(Modifier.fillMaxWidth().fillMaxHeight().padding(horizontal = 20.dp).padding(bottom = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.MyLocation, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text("Stops near me", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Text("within ${radius.toInt()} m", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            if (user == null) {
+                Text("Waiting for your location…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else if (nearby.isEmpty()) {
+                Text("Nothing within ${radius.toInt()} m", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                    items(nearby) { item ->
+                        ListItem(
+                            headlineContent = { Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            supportingContent = { Text(item.network.label) },
+                            leadingContent = { ServiceLogo(item.network, 24.dp) },
+                            trailingContent = { Text(TransitMotion.formatDistance(item.distance), color = MaterialTheme.colorScheme.primary) },
+                            modifier = Modifier.clickable { item.open() },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlaceSheet(
     modifier: Modifier,
     place: Place,
     arrivals: suspend (Int) -> List<Arrival>,
+    metrobusArrivals: suspend (String) -> List<Arrival>,
+    metrobusSchedule: suspend (String) -> List<MetrobusTime>,
+    valenbisiBikes: suspend (Int) -> List<Bike>,
+    rodaliesTimes: (String) -> List<Arrival>,
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
+    isPinned: (String) -> Boolean,
+    onTogglePin: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     DraggableSheet(
@@ -1681,7 +2285,11 @@ private fun PlaceSheet(
                 Column(Modifier.weight(1f)) {
                     Text(place.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (place.detail.isNotBlank()) {
+                        place.lines.take(4).forEach { line ->
+                            SmallLineBadge(line)
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        if (place.detail.isNotBlank() && place.detail != place.name) {
                             Text(
                                 place.detail,
                                 style = MaterialTheme.typography.bodySmall,
@@ -1689,13 +2297,6 @@ private fun PlaceSheet(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        if (place.network == Network.Metro) {
-                            place.lines.forEach { line ->
-                                MetroBadge(line, height = 64.dp)
-                                Spacer(Modifier.width(8.dp))
-                            }
                         }
                     }
                 }
@@ -1712,23 +2313,30 @@ private fun PlaceSheet(
                 Network.Metro -> {
                     val stationId = place.id.removePrefix("mt-").toIntOrNull()
                     var times by remember(place) { mutableStateOf<List<Arrival>>(emptyList()) }
+                    var loading by remember(place) { mutableStateOf(true) }
                     LaunchedEffect(place) {
+                        loading = true
                         times = if (stationId != null) arrivals(stationId) else emptyList()
+                        loading = false
                     }
-                    // Every line serving this station is shown next to its address.
-                    Spacer(Modifier.height(12.dp))
-                    if (times.isEmpty()) {
+                    // The line badges, big, on their own row.
+                    if (place.lines.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                    }
+                    if (loading) {
+                        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                    } else if (times.isEmpty()) {
                         Text("No upcoming trains", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(times) { arrival ->
                                 Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.surfaceVariant) {
                                     Row(
-                                        Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        MetroBadge(arrival.line.removePrefix("L"))
-                                        Spacer(Modifier.width(8.dp))
+                                        MetroBadge(arrival.line.removePrefix("L"), height = 24.dp)
+                                        Spacer(Modifier.width(10.dp))
                                         Text(arrival.minutes, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                                     }
                                 }
@@ -1766,7 +2374,7 @@ private fun PlaceSheet(
                             modifier = Modifier.weight(1f),
                         )
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(14.dp))
                     AssistChip(
                         onClick = {},
                         label = { Text(if (place.open) "Open" else "Closed") },
@@ -1778,13 +2386,144 @@ private fun PlaceSheet(
                             )
                         },
                     )
+                    // Each docked bike: which stand, its type and its user rating.
+                    val dockNumber = place.id.removePrefix("vb-").toIntOrNull()
+                    var bikes by remember(place) { mutableStateOf<List<Bike>>(emptyList()) }
+                    var bikesLoading by remember(place) { mutableStateOf(true) }
+                    LaunchedEffect(place) {
+                        bikesLoading = true
+                        bikes = if (dockNumber != null) valenbisiBikes(dockNumber) else emptyList()
+                        bikesLoading = false
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Text("Bikes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(6.dp))
+                    if (bikesLoading) {
+                        Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                    } else if (bikes.isEmpty()) {
+                        Text("No bikes docked", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(bikes, key = { it.number }) { bike ->
+                                Surface(shape = MaterialTheme.shapes.medium, tonalElevation = 2.dp) {
+                                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.DirectionsBike, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                        Spacer(Modifier.width(10.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text("Stand ${bike.stand}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                                            Text("Bike ${bike.number} · ${bike.type.lowercase().replaceFirstChar { it.uppercase() }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                        if (bike.ratings > 0) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(Icons.Filled.Star, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                                Spacer(Modifier.width(2.dp))
+                                                Text("${(bike.rating / 20).toInt()} (${bike.ratings})", style = MaterialTheme.typography.labelMedium)
+                                            }
+                                        } else {
+                                            Text("No rating", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Network.Metrobus -> {
+                    val code = place.id.removePrefix("mb-")
+                    var times by remember(place) { mutableStateOf<List<Arrival>>(emptyList()) }
+                    var schedule by remember(place) { mutableStateOf<List<MetrobusTime>>(emptyList()) }
+                    var loading by remember(place) { mutableStateOf(true) }
+                    var showSchedule by remember(place) { mutableStateOf(false) }
+                    LaunchedEffect(place) {
+                        loading = true
+                        times = metrobusArrivals(code)
+                        schedule = metrobusSchedule(code)
+                        loading = false
+                    }
+                    if (loading) {
+                        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                    } else {
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (times.isEmpty()) {
+                                item { Text("No upcoming buses", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            } else {
+                                items(times) { arrival ->
+                                    ListItem(
+                                        leadingContent = { LineBadge(arrival.line) },
+                                        headlineContent = { Text(arrival.destination.ifBlank { "—" }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                        trailingContent = {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(arrival.minutes, color = MaterialTheme.colorScheme.primary)
+                                                val key = "mb-$code:${arrival.line}"
+                                                IconButton(onClick = { onTogglePin(key) }) {
+                                                    val pinned = isPinned(key)
+                                                    Icon(
+                                                        if (pinned) Icons.Filled.NotificationsActive else Icons.Filled.NotificationsNone,
+                                                        contentDescription = "Alert line",
+                                                        tint = if (pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    )
+                                                }
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                            item {
+                                Button(
+                                    onClick = { showSchedule = true },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                                ) {
+                                    Icon(Icons.Filled.Schedule, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Timetable")
+                                }
+                            }
+                        }
+                    }
+                    if (showSchedule && schedule.isNotEmpty()) {
+                        ModalBottomSheet(onDismissRequest = { showSchedule = false }) {
+                            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
+                                schedule.groupBy { it.hour }.forEach { (hour, entries) ->
+                                    item(key = "h$hour") {
+                                        Column(Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
+                                            Text(
+                                                String.format(Locale.US, "%02d:00", hour),
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                            )
+                                            Text(
+                                                entries.joinToString("  ") { String.format(Locale.US, "%02d %s", it.minute, it.line.removePrefix("MB")) },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Network.Rodalies -> {
+                    val times = remember(place) { rodaliesTimes(place.name) }
+                    if (times.isEmpty()) {
+                        Text("No upcoming trains", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            items(times) { arrival ->
+                                ListItem(
+                                    leadingContent = { LineBadge(arrival.line) },
+                                    headlineContent = { Text(arrival.destination.ifBlank { "—" }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                    trailingContent = { Text(arrival.minutes, color = MaterialTheme.colorScheme.primary) },
+                                )
+                            }
+                        }
+                    }
                 }
                 else -> Text(placeSubtitle(place), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
 }
-
 /** The planned trip, in its own dismissible pane. */
 @Composable
 private fun JourneySheet(modifier: Modifier, option: JourneyOption, onDismiss: () -> Unit) {
@@ -1812,6 +2551,7 @@ private fun LineSheet(
     transit: TransitData,
     busStore: BusStore,
     line: String,
+    onOpenStop: (Stop) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val buses = busStore.buses.filter { it.line == line }
@@ -1862,6 +2602,13 @@ private fun LineSheet(
                     val eta = etas[stop.id]
                     ListItem(
                         headlineContent = { Text(cleanStopName(stop.name), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        supportingContent = {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                stop.lines.forEach { serving ->
+                                    Box(Modifier.clickable { onOpenStop(stop) }) { SmallLineBadge(serving) }
+                                }
+                            }
+                        },
                         leadingContent = { Icon(Icons.Filled.Place, contentDescription = null) },
                         trailingContent = {
                             Text(
@@ -1877,12 +2624,26 @@ private fun LineSheet(
 }
 
 @Composable
-private fun SettingsTab(language: Language, onLanguage: (Language) -> Unit) {
+private fun SettingsTab(
+    language: Language,
+    onLanguage: (Language) -> Unit,
+    theme: String,
+    onTheme: (String) -> Unit,
+    mapType: String,
+    onMapType: (String) -> Unit,
+    alertMinutes: Int,
+    onAlertMinutes: (Int) -> Unit,
+) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(currentStrings.value.settings, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        Image(
+            painter = androidx.compose.ui.res.painterResource(R.drawable.opentransport_logo),
+            contentDescription = "OpenTransport Valencia",
+            modifier = Modifier.height(72.dp),
+        )
         Spacer(Modifier.height(4.dp))
         Text(currentStrings.value.languageTitle, style = MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1891,6 +2652,49 @@ private fun SettingsTab(language: Language, onLanguage: (Language) -> Unit) {
                     selected = entry == language,
                     onClick = { onLanguage(entry) },
                     label = { Text(entry.label) },
+                )
+            }
+        }
+        Text(
+            "Changing the language needs an app restart.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+        Text("Appearance", style = MaterialTheme.typography.titleMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("system" to "Auto", "light" to "Light", "dark" to "Dark").forEach { (value, label) ->
+                FilterChip(
+                    selected = theme == value,
+                    onClick = { onTheme(value) },
+                    label = { Text(label) },
+                )
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("Map", style = MaterialTheme.typography.titleMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("default" to "Auto", "light" to "Light", "dark" to "Dark").forEach { (value, label) ->
+                FilterChip(
+                    selected = mapType == value,
+                    onClick = { onMapType(value) },
+                    label = { Text(label) },
+                )
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("Arrival alerts", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Notify me when a pinned line is this many minutes away.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(5, 10, 15).forEach { minutes ->
+                FilterChip(
+                    selected = alertMinutes == minutes,
+                    onClick = { onAlertMinutes(minutes) },
+                    label = { Text("$minutes min") },
                 )
             }
         }
@@ -1924,15 +2728,37 @@ private fun SettingsTab(language: Language, onLanguage: (Language) -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(12.dp))
-        Text("© 2026 EMT-RealTime contributors", style = MaterialTheme.typography.bodySmall)
+        Text("© 2026 OpenTransport Valencia", style = MaterialTheme.typography.bodySmall)
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LayersSheet(enabled: Set<Network>, onToggle: (Network) -> Unit, onDismiss: () -> Unit) {
+private fun LayersSheet(
+    enabled: Set<Network>,
+    onToggle: (Network) -> Unit,
+    mapType: String,
+    onMapType: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+            Text("Map style", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    "default" to "Auto",
+                    "light" to "Light",
+                    "dark" to "Dark",
+                ).forEach { (value, label) ->
+                    FilterChip(
+                        selected = mapType == value,
+                        onClick = { onMapType(value) },
+                        label = { Text(label) },
+                    )
+                }
+            }
+            Spacer(Modifier.height(16.dp))
             Text("Show on the map", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
             Network.entries.forEach { network ->
@@ -1952,6 +2778,34 @@ private fun LayersSheet(enabled: Set<Network>, onToggle: (Network) -> Unit, onDi
 /** Small line badge for the stop header strip. */
 @Composable
 private fun SmallLineBadge(line: String) {
+    if (line.startsWith("C") && line.length > 1 && line.drop(1).all { it.isDigit() }) {
+        Surface(color = Color(0xFFE30613), shape = RoundedCornerShape(4.dp)) {
+            Text(
+                line,
+                modifier = Modifier.height(16.dp).padding(horizontal = 6.dp).wrapContentHeight(),
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        return
+    }
+    if (line.startsWith("MB")) {
+        Surface(color = Network.Metrobus.let { networkDot(it) }, shape = RoundedCornerShape(4.dp)) {
+            Text(
+                line.removePrefix("MB"),
+                modifier = Modifier.height(16.dp).padding(horizontal = 6.dp).wrapContentHeight(),
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        return
+    }
+    if (line.startsWith("M") && line.length > 1 && line.drop(1).all { it.isDigit() }) {
+        MetroBadge(line.drop(1), height = 16.dp)
+        return
+    }
     val badge = rememberLineBadge(line)
     if (badge != null) {
         Image(
@@ -1990,7 +2844,7 @@ private fun MetroBadge(line: String, height: Dp = 22.dp) {
 }
 
 @Composable
-private fun ServiceLogo(network: Network, size: Dp = 22.dp) {
+fun ServiceLogo(network: Network, size: Dp = 22.dp) {
     val context = LocalContext.current
     val bitmap = remember(network) {
         runCatching { context.assets.open(serviceAsset(network)).use { BitmapFactory.decodeStream(it) } }.getOrNull()
@@ -2021,6 +2875,7 @@ private fun serviceAsset(network: Network): String = when (network) {
     Network.Metro -> "metrovalencia.png"
     Network.Valenbisi -> "valenbisi.png"
     Network.Metrobus -> "metrobus.png"
+    Network.Rodalies -> "rodalies.png"
 }
 
 private fun networkMark(network: Network): String = when (network) {
@@ -2028,6 +2883,7 @@ private fun networkMark(network: Network): String = when (network) {
     Network.Metro -> "MV"
     Network.Valenbisi -> "VB"
     Network.Metrobus -> "MB"
+    Network.Rodalies -> "R"
 }
 
 @Composable
@@ -2055,6 +2911,7 @@ private fun networkDot(network: Network): Color = when (network) {
     Network.Metro -> Color(0xFFE4002B)
     Network.Valenbisi -> Color(0xFF22C55E)
     Network.Metrobus -> Color(0xFF0EA5E9)
+    Network.Rodalies -> Color(0xFFE30613)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
