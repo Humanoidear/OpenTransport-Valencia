@@ -48,6 +48,9 @@ class Strings(private val language: Language) {
         "Transport públic de València en temps real: EMT, Metrovalencia, Rodalies, Metrobús i Valenbisi en un sol mapa.",
     )
     val onboardFeatures = pick("Qué puedes hacer", "What you can do", "Què pots fer")
+    val onboardMore = pick("Y además", "And more", "I a més")
+    val previous = pick("Atrás", "Back", "Arrere")
+    val next = pick("Siguiente", "Next", "Següent")
     val featureBus = pick("Ver autobuses EMT en directo sobre el mapa", "Track EMT buses live on the map", "Veure autobusos EMT en directe al mapa")
     val featureMetro = pick("Metro y tranvía con llegadas en tiempo real", "Metro & tram with live arrivals", "Metro i tramvia amb arribades en temps real")
     val featureRodalies = pick("Cercanías/Rodalies con horarios y avisos", "Rodalies trains with times and alerts", "Rodalies amb horaris i avisos")
@@ -62,6 +65,61 @@ class Strings(private val language: Language) {
     val light = pick("Claro", "Light", "Clar")
     val dark = pick("Oscuro", "Dark", "Fosc")
     val start = pick("Empezar", "Get started", "Comença")
+
+    // Common UI
+    val all = pick("Todas", "All", "Totes")
+    val close = pick("Cerrar", "Close", "Tanca")
+    val open = pick("Abierto", "Open", "Obert")
+    val closed = pick("Cerrado", "Closed", "Tancat")
+    val remove = pick("Quitar", "Remove", "Lleva")
+    val favourite = pick("Favorito", "Favourite", "Favorit")
+    val addFavourite = pick("Añadir a favoritos", "Add favourite", "Afegir a favorits")
+    val removeFavourite = pick("Quitar de favoritos", "Remove favourite", "Llevar de favorits")
+    val hide = pick("Ocultar", "Hide", "Amaga")
+    val show = pick("Mostrar", "Show", "Mostra")
+    val noMatches = pick("Sin resultados", "No matches", "Sense resultats")
+    val typeToSearch = pick("Escribe para buscar", "Type to search", "Escriu per a buscar")
+    val mapLayers = pick("Capas del mapa", "Map layers", "Capes del mapa")
+    val myLocation = pick("Mi ubicación", "My location", "La meua ubicació")
+    val resetView = pick("Restablecer vista", "Reset view", "Restablir vista")
+    val timetable = pick("Horarios", "Timetable", "Horaris")
+    val trip = pick("Viaje", "Trip", "Viatge")
+    val bikes = pick("Bicis", "Bikes", "Bicis")
+    val freeDocks = pick("Anclajes libres", "Free docks", "Ancoratges lliures")
+    val noBikesDocked = pick("Sin bicis ancladas", "No bikes docked", "Sense bicis ancorades")
+    val noRating = pick("Sin valoración", "No rating", "Sense valoració")
+    val stand = pick("Anclaje", "Stand", "Ancoratge")
+    val noBuses = pick("No vienen autobuses ahora", "No buses coming right now", "No venen autobusos ara")
+    val noTrains = pick("No hay trenes próximos", "No upcoming trains", "No hi ha trens pròxims")
+    val noUpcomingBuses = pick("No hay autobuses próximos", "No upcoming buses", "No hi ha autobusos pròxims")
+    val noServiceUpdates = pick("No hay avisos ahora", "No service updates right now", "No hi ha avisos ara")
+    val starToSave = pick("Marca una parada para guardarla", "Star a stop to save it here", "Marca una parada per a guardar-la")
+    val busLeftMap = pick("El autobús salió del mapa", "The bus left the map", "L'autobús va eixir del mapa")
+    val stopsNearMe = pick("Paradas cerca de mí", "Stops near me", "Parades prop de mi")
+    val waitingLocation = pick("Esperando tu ubicación…", "Waiting for your location…", "Esperant la teua ubicació…")
+    val serviceUpdates = pick("Avisos del servicio", "Service updates", "Avisos del servei")
+    val chooseStart = pick("Elige un origen", "Choose a start", "Tria un origen")
+    val chooseDestination = pick("Elige un destino", "Choose a destination", "Tria una destinació")
+    val openInMaps = pick("Abrir en Mapas", "Open in Maps", "Obrir en Mapes")
+    val openStopInMaps = pick("Abrir parada en Mapas", "Open stop in Maps", "Obrir parada en Mapes")
+    val openPositionInMaps = pick("Abrir posición en Mapas", "Open position in Maps", "Obrir posició en Mapes")
+    val alertThisLine = pick("Avisar de esta línea", "Alert this line", "Avisar d'esta línia")
+    val alertAtNextStop = pick("Avisar en la próxima parada", "Alert at next stop", "Avisar en la pròxima parada")
+    val stopFollowing = pick("Dejar de seguir", "Stop following", "Deixar de seguir")
+    val copyLine = pick("Copiar línea", "Copy line", "Copiar línia")
+    val arrivalAlerts = pick("Avisos de llegada", "Arrival alerts", "Avisos d'arribada")
+    val arrivalAlertsDesc = pick(
+        "Avísame cuando una línea marcada esté a estos minutos.",
+        "Notify me when a pinned line is this many minutes away.",
+        "Avisa'm quan una línia marcada estiga a estos minuts.",
+    )
+    val aboutSources = pick("Acerca de y fuentes de datos", "About & data sources", "Sobre l'app i fonts de dades")
+    val languageRestart = pick(
+        "Cambiar el idioma requiere reiniciar la app.",
+        "Changing the language needs an app restart.",
+        "Canviar l'idioma requereix reiniciar l'app.",
+    )
+    val openNotice = pick("Abrir aviso", "Open notice", "Obrir avís")
 }
 
 val currentStrings = mutableStateOf(Strings(Language.En))

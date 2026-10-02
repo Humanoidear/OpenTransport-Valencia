@@ -1088,7 +1088,7 @@ private fun MapTab(
                         item { FilterChip(selected = !byLine, onClick = { byLine = false }, label = { Text(currentStrings.value.stops) }) }
                         item { FilterChip(selected = byLine, onClick = { byLine = true }, label = { Text(currentStrings.value.lines) }) }
                         item {
-                            FilterChip(selected = searchMedium == null, onClick = { searchMedium = null }, label = { Text("All") })
+                            FilterChip(selected = searchMedium == null, onClick = { searchMedium = null }, label = { Text(currentStrings.value.all) })
                         }
                         items(Network.entries.toList()) { network ->
                             FilterChip(
@@ -1319,10 +1319,10 @@ private fun StopSheet(
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
                             Spacer(Modifier.width(8.dp))
-                            Text("Service updates", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            Text(currentStrings.value.serviceUpdates, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                             AssistChip(
                                 onClick = { updatesOpen = !updatesOpen },
-                                label = { Text(if (updatesOpen) "Hide" else "Show") },
+                                label = { Text(if (updatesOpen) currentStrings.value.hide else currentStrings.value.show) },
                             )
                         }
                         if (updatesOpen) {
@@ -1338,7 +1338,7 @@ private fun StopSheet(
 
             when {
                 loading -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                arrivals.isEmpty() -> Text("No buses coming right now", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                arrivals.isEmpty() -> Text(currentStrings.value.noBuses, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(arrivals) { arrival ->
@@ -1416,12 +1416,12 @@ private fun StopSheet(
                                     onDismissRequest = { menuIndex = null },
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("Alert this line") },
+                                        text = { Text(currentStrings.value.alertThisLine) },
                                         leadingIcon = { Icon(Icons.Filled.NotificationsNone, contentDescription = null) },
                                         onClick = { onTogglePin("${stop.id}:${arrival.line}"); menuIndex = null },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Open stop in Maps") },
+                                        text = { Text(currentStrings.value.openStopInMaps) },
                                         leadingIcon = { Icon(Icons.Filled.Map, contentDescription = null) },
                                         onClick = {
                                             shareContext.openInMaps(stop.lat, stop.lon, cleanStopName(stop.name))
@@ -1429,7 +1429,7 @@ private fun StopSheet(
                                         },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Copy line") },
+                                        text = { Text(currentStrings.value.copyLine) },
                                         leadingIcon = { Icon(Icons.Filled.ContentCopy, contentDescription = null) },
                                         onClick = {
                                             clipboard.setText(androidx.compose.ui.text.AnnotatedString(arrival.line))
@@ -1508,7 +1508,7 @@ private fun FollowSheet(
     ) { expanded, dismiss ->
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 6.dp, bottom = 16.dp)) {
             if (bus == null) {
-                Text("The bus left the map", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(currentStrings.value.busLeftMap, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 return@Column
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1530,17 +1530,17 @@ private fun FollowSheet(
                     }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(
-                            text = { Text("Stop following") },
+                            text = { Text(currentStrings.value.stopFollowing) },
                             leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
                             onClick = { menu = false; onDismiss() },
                         )
                         DropdownMenuItem(
-                            text = { Text("Alert at next stop") },
+                            text = { Text(currentStrings.value.alertAtNextStop) },
                             leadingIcon = { Icon(Icons.Filled.NotificationsNone, contentDescription = null) },
                             onClick = { onTogglePin("${bus.nextStop}:${bus.line}"); menu = false },
                         )
                         DropdownMenuItem(
-                            text = { Text("Open position in Maps") },
+                            text = { Text(currentStrings.value.openPositionInMaps) },
                             leadingIcon = { Icon(Icons.Filled.Map, contentDescription = null) },
                             onClick = {
                                 shareContext.openInMaps(bus.render.lat, bus.render.lon, "Bus ${bus.number}")
@@ -1647,7 +1647,7 @@ private fun SavedRow(
             ) {
                 Icon(
                     Icons.Filled.Delete,
-                    contentDescription = "Remove",
+                    contentDescription = currentStrings.value.remove,
                     tint = MaterialTheme.colorScheme.onErrorContainer,
                     modifier = Modifier.padding(end = 20.dp),
                 )
@@ -2231,15 +2231,14 @@ private fun NearbySheet(
                 Icon(Icons.Filled.MyLocation, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(10.dp))
                 Column {
-                    Text("Stops near me", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                    Text("within ${radius.toInt()} m", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(currentStrings.value.stopsNearMe, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 }
             }
             Spacer(Modifier.height(10.dp))
             if (user == null) {
-                Text("Waiting for your location…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(currentStrings.value.waitingLocation, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else if (nearby.isEmpty()) {
-                Text("Nothing within ${radius.toInt()} m", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(currentStrings.value.noMatches, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
                     items(nearby) { item ->
@@ -2326,7 +2325,7 @@ private fun PlaceSheet(
                     if (loading) {
                         Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     } else if (times.isEmpty()) {
-                        Text("No upcoming trains", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(currentStrings.value.noTrains, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(times) { arrival ->
@@ -2377,7 +2376,7 @@ private fun PlaceSheet(
                     Spacer(Modifier.height(14.dp))
                     AssistChip(
                         onClick = {},
-                        label = { Text(if (place.open) "Open" else "Closed") },
+                        label = { Text(if (place.open) currentStrings.value.open else currentStrings.value.closed) },
                         leadingIcon = {
                             Icon(
                                 if (place.open) Icons.Filled.CheckCircle else Icons.Filled.Cancel,
@@ -2396,12 +2395,12 @@ private fun PlaceSheet(
                         bikesLoading = false
                     }
                     Spacer(Modifier.height(16.dp))
-                    Text("Bikes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(currentStrings.value.bikes, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(6.dp))
                     if (bikesLoading) {
                         Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     } else if (bikes.isEmpty()) {
-                        Text("No bikes docked", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(currentStrings.value.noBikesDocked, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             items(bikes, key = { it.number }) { bike ->
@@ -2420,7 +2419,7 @@ private fun PlaceSheet(
                                                 Text("${(bike.rating / 20).toInt()} (${bike.ratings})", style = MaterialTheme.typography.labelMedium)
                                             }
                                         } else {
-                                            Text("No rating", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(currentStrings.value.noRating, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
                                 }
@@ -2445,7 +2444,7 @@ private fun PlaceSheet(
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             if (times.isEmpty()) {
-                                item { Text("No upcoming buses", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                item { Text(currentStrings.value.noUpcomingBuses, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                             } else {
                                 items(times) { arrival ->
                                     ListItem(
@@ -2475,7 +2474,7 @@ private fun PlaceSheet(
                                 ) {
                                     Icon(Icons.Filled.Schedule, contentDescription = null)
                                     Spacer(Modifier.width(8.dp))
-                                    Text("Timetable")
+                                    Text(currentStrings.value.timetable)
                                 }
                             }
                         }
@@ -2506,7 +2505,7 @@ private fun PlaceSheet(
                 Network.Rodalies -> {
                     val times = remember(place) { rodaliesTimes(place.name) }
                     if (times.isEmpty()) {
-                        Text("No upcoming trains", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(currentStrings.value.noTrains, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             items(times) { arrival ->
@@ -2533,7 +2532,7 @@ private fun JourneySheet(modifier: Modifier, option: JourneyOption, onDismiss: (
         peek = {},
     ) { _, _ ->
         Column(Modifier.fillMaxWidth().fillMaxHeight().padding(horizontal = 20.dp).padding(bottom = 16.dp)) {
-            Text("Trip", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(currentStrings.value.trip, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             Text(
                 "${option.totalMinutes} min · walk ${option.walkMeters} m",
                 style = MaterialTheme.typography.bodySmall,
@@ -2661,7 +2660,7 @@ private fun SettingsTab(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(12.dp))
-        Text("Appearance", style = MaterialTheme.typography.titleMedium)
+        Text(currentStrings.value.appearance, style = MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("system" to "Auto", "light" to "Light", "dark" to "Dark").forEach { (value, label) ->
                 FilterChip(
@@ -2683,7 +2682,7 @@ private fun SettingsTab(
             }
         }
         Spacer(Modifier.height(16.dp))
-        Text("Arrival alerts", style = MaterialTheme.typography.titleMedium)
+        Text(currentStrings.value.arrivalAlerts, style = MaterialTheme.typography.titleMedium)
         Text(
             "Notify me when a pinned line is this many minutes away.",
             style = MaterialTheme.typography.bodySmall,
@@ -2743,7 +2742,7 @@ private fun LayersSheet(
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
-            Text("Map style", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(currentStrings.value.mapStyle, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(
@@ -2759,7 +2758,7 @@ private fun LayersSheet(
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Text("Show on the map", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(currentStrings.value.layersTitle, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
             Network.entries.forEach { network ->
                 ListItem(
@@ -2894,7 +2893,7 @@ private fun ServiceFilterRow(
     exclude: Set<Network> = emptySet(),
 ) {
     LazyRow(modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { FilterChip(selected = selected == null, onClick = { onSelect(null) }, label = { Text("All") }) }
+        item { FilterChip(selected = selected == null, onClick = { onSelect(null) }, label = { Text(currentStrings.value.all) }) }
         items(Network.entries.filterNot { it in exclude }) { network ->
             FilterChip(
                 selected = selected == network,
@@ -2927,7 +2926,7 @@ private fun StopPickerSheet(transit: TransitData, onPick: (Stop) -> Unit, onDism
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                label = { Text("Search a stop") },
+                label = { Text(currentStrings.value.searchStop) },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
