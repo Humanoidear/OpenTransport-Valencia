@@ -1,30 +1,30 @@
 package es.emtvalencia.live
 
+import android.app.AlarmManager
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
+import android.net.Uri
+import android.os.Bundle
+import android.os.SystemClock
 import android.view.View
 import android.widget.RemoteViews
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.net.HttpURLConnection
-import java.net.URL
-import kotlin.math.cos
-import kotlin.math.ln
-import kotlin.math.tan
 
-/**
- * Home-screen widget showing the next arrivals at a chosen stop. The stop is
- * stored per widget id, and the network is stored alongside it so other
- * operators can be wired in without changing the layout.
- */
+/** Home-screen widget: next arrivals at a chosen stop, rounded-rect card with a scrolling list. */
 class StopWidgetProvider : AppWidgetProvider() {
+
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
+        scheduleRefresh(context)
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -34,6 +34,13 @@ class StopWidgetProvider : AppWidgetProvider() {
             }
         }
     }
+
+    override fun onAppWidgetOptionsChanged(context: Context, manager: AppWidgetManager, widgetId: Int, newOptions: Bundle) {
+        onUpdate(context, manager, intArrayOf(widgetId))
+    }
+
+    override fun onEnabled(context: Context) = scheduleRefresh(context)
+    override fun onDisabled(context: Context) = cancelRefresh(context)
 
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
@@ -56,143 +63,66 @@ class StopWidgetProvider : AppWidgetProvider() {
         val stopId = prefs.getInt("widget_${widgetId}_stop", -1)
         val name = prefs.getString("widget_${widgetId}_name", null)
         val network = Network.valueOf(prefs.getString("widget_${widgetId}_network", Network.Emt.name) ?: Network.Emt.name)
+        val p = WidgetShared.palette(context)
 
-        val dark = (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
-            android.content.res.Configuration.UI_MODE_NIGHT_YES
-        val accent = if (android.os.Build.VERSION.SDK_INT >= 31) {
-            runCatching { context.getColor(android.R.color.system_accent1_600) }.getOrElse { 0xFF0B57D0.toInt() }
-        } else {
-            0xFF0B57D0.toInt()
-        }
-        val onSurface = if (dark) 0xFFF2F4F7.toInt() else 0xFF1A1C1E.toInt()
-        val onSurfaceVariant = if (dark) 0xFFB6C2CF.toInt() else 0xFF43474E.toInt()
+        val opts = runCatching { manager.getAppWidgetOptions(widgetId) }.getOrNull()
+        val minW = opts?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0) ?: 0
+        val maxW = opts?.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, 0) ?: 0
+        val isWide = maxOf(minW, maxW) >= 200
 
-        val views = RemoteViews(context.packageName, R.layout.widget_stop)
-        // System accent as the card colour, with the map only faintly behind it.
-        val accentSoft = (accent and 0x00FFFFFF) or (0xE6 shl 24)
-        views.setInt(R.id.widget_root, "setBackgroundColor", accentSoft)
-        views.setInt(R.id.widget_map, "setImageAlpha", if (dark) 40 else 55)
+        val views = RemoteViews(context.packageName, if (isWide) R.layout.widget_stop_wide else R.layout.widget_stop)
+        views.setImageViewBitmap(R.id.widget_bg, roundedCard(context, manager, widgetId, p.container))
+        views.setInt(R.id.widget_refresh, "setColorFilter", p.accent)
         views.setTextViewText(R.id.widget_title, name ?: context.getString(R.string.widget_choose_stop))
-        views.setTextViewText(R.id.widget_subtitle, network.label)
-        views.setTextColor(R.id.widget_title, onSurface)
-        views.setTextColor(R.id.widget_subtitle, onSurfaceVariant)
-        views.setTextColor(R.id.widget_lines, accent)
-        val crossing = if (stopId > 0 && network == Network.Emt) {
-            runCatching { TransitDataLoader.load(context) }.getOrNull()?.stopsById?.get(stopId.toString())?.lines?.joinToString(" · ")
-        } else {
-            null
-        }
-        views.setTextViewText(R.id.widget_lines, crossing.orEmpty())
-        for (rowId in listOf(R.id.widget_row1, R.id.widget_row2, R.id.widget_row3)) {
-            views.setTextColor(rowId, onSurface)
-        }
-        views.setOnClickPendingIntent(R.id.widget_title, openApp(context))
+        views.setTextColor(R.id.widget_title, p.onContainer)
+        views.setTextColor(R.id.widget_row1, p.onContainer)
+        views.setTextColor(R.id.widget_row1_dest, p.variant)
         views.setOnClickPendingIntent(R.id.widget_root, openStop(context, stopId))
+        views.setOnClickPendingIntent(R.id.widget_refresh, refresh(context))
+        WidgetShared.serviceLogo(context, network)?.let { views.setImageViewBitmap(R.id.widget_logo, it) }
 
-        // Static map behind the card, plus the service logo.
-        val lat = prefs.getFloat("widget_${widgetId}_lat", 0f).toDouble()
-        val lon = prefs.getFloat("widget_${widgetId}_lon", 0f).toDouble()
-        if (lat != 0.0 && lon != 0.0) staticMapTile(lat, lon, dark)?.let {
-            views.setImageViewBitmap(R.id.widget_map, it)
-        }
-        serviceLogo(context, network)?.let { views.setImageViewBitmap(R.id.widget_logo, it) }
+        val arrivals = WidgetShared.arrivals(context, stopId, network)
+        WidgetShared.cachedStopId = stopId
+        WidgetShared.cachedArrivals = arrivals
+        val hero = if (stopId <= 0) {
+            "–" to context.getString(R.string.widget_tap_to_configure)
+        } else if (network != Network.Emt) {
+            "···" to context.getString(R.string.widget_feed_soon, network.label)
+        } else arrivals.firstOrNull()?.let {
+            (it.minutes.ifBlank { it.arrivalTime.take(5) }) to it.destination
+        } ?: ("–" to context.getString(R.string.widget_no_buses))
 
-        val rows = listOf(
-            R.id.widget_row1_img to R.id.widget_row1,
-            R.id.widget_row2_img to R.id.widget_row2,
-            R.id.widget_row3_img to R.id.widget_row3,
-        )
-        val lines = mutableListOf<String>()
-        val rowLines = mutableListOf<String?>()
-        if (stopId <= 0) {
-            lines += context.getString(R.string.widget_tap_to_configure)
-            rowLines += null
-        } else if (network == Network.Emt) {
-            val transit = runCatching { TransitDataLoader.load(context) }.getOrNull()
-            val info = if (transit != null) runCatching { EmtRepository(transit).stop(stopId) }.getOrNull() else null
-            info?.arrivals.orEmpty().take(rows.size).forEach { arrival ->
-                lines += arrival.minutes.ifBlank { arrival.arrivalTime.take(5) }
-                rowLines += arrival.line
-            }
-            if (lines.isEmpty()) { lines += context.getString(R.string.widget_no_buses); rowLines += null }
-        } else {
-            lines += context.getString(R.string.widget_feed_soon, network.label)
-            rowLines += null
-        }
+        WidgetShared.lineBadge(context, arrivals.firstOrNull()?.line.orEmpty())?.let {
+            views.setImageViewBitmap(R.id.widget_row1_img, it)
+            views.setViewVisibility(R.id.widget_row1_img, View.VISIBLE)
+        } ?: views.setViewVisibility(R.id.widget_row1_img, View.GONE)
+        views.setTextViewText(R.id.widget_row1, hero.first)
+        views.setTextViewText(R.id.widget_row1_dest, hero.second)
 
-        rows.forEachIndexed { index, (imageId, textId) ->
-            if (index < lines.size) {
-                views.setViewVisibility(textId, View.VISIBLE)
-                val badge = rowLines.getOrNull(index)?.let { lineBadge(context, it) }
-                if (badge != null) {
-                    views.setImageViewBitmap(imageId, badge)
-                    views.setViewVisibility(imageId, View.VISIBLE)
-                    views.setTextViewText(textId, lines[index])
-                } else {
-                    views.setViewVisibility(imageId, View.GONE)
-                    views.setTextViewText(textId, rowLines.getOrNull(index)?.let { "$it   ${lines[index]}" } ?: lines[index])
-                }
-            } else {
-                views.setViewVisibility(imageId, View.GONE)
-                views.setViewVisibility(textId, View.GONE)
-            }
+        if (isWide) {
+            val serviceIntent = Intent(context, WidgetService::class.java)
+                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
+            serviceIntent.data = Uri.parse(serviceIntent.toUri(Intent.URI_INTENT_SCHEME))
+            views.setRemoteAdapter(R.id.widget_list, serviceIntent)
         }
         manager.updateAppWidget(widgetId, views)
+        if (isWide) manager.notifyAppWidgetViewDataChanged(widgetId, R.id.widget_list)
     }
 
-    /** Line image for a widget row: geometry from the generator/PNG assets. */
-    private fun lineBadge(context: Context, line: String): android.graphics.Bitmap? {
-        if (line.startsWith("MB")) return null
-        if (line.startsWith("M") && line.length > 1 && line.drop(1).all { it.isDigit() }) {
-            return runCatching {
-                context.assets.open("metrovalencia/${line.drop(1)}.png").use { BitmapFactory.decodeStream(it) }
-            }.getOrNull()
-        }
-        return runCatching {
-            val url = "https://geoportal.emtvalencia.es/ciudadano/icongenerator/create-line-image.php" +
-                "?size=50&type=normal&lineNumber=${java.net.URLEncoder.encode(line, "UTF-8")}" +
-                "&showBorder=false&borderColor=white"
-            val connection = URL(url).openConnection() as HttpURLConnection
-            connection.connectTimeout = 8_000
-            connection.readTimeout = 8_000
-            connection.inputStream.use { BitmapFactory.decodeStream(it) }
-        }.getOrNull()
+    /** Plain rounded-rect card at the widget's exact size (no blobs, no asymmetry). */
+    private fun roundedCard(context: Context, manager: AppWidgetManager, widgetId: Int, container: Int): Bitmap {
+        val dm = context.resources.displayMetrics
+        val opts = runCatching { manager.getAppWidgetOptions(widgetId) }.getOrNull()
+        val wDp = opts?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 260) ?: 260
+        val hDp = opts?.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 260) ?: 260
+        val w = ((wDp * dm.density).toInt()).coerceIn(200, 1200)
+        val h = ((hDp * dm.density).toInt()).coerceIn(200, 1200)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val radius = (28 * dm.density)
+        val path = Path().apply { addRoundRect(0f, 0f, w.toFloat(), h.toFloat(), radius, radius, Path.Direction.CW) }
+        Canvas(bmp).drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = container })
+        return bmp
     }
-
-    private fun staticMapTile(lat: Double, lon: Double, dark: Boolean): android.graphics.Bitmap? = runCatching {
-        val zoom = 15
-        val tiles = 1 shl zoom
-        val x = ((lon + 180.0) / 360.0 * tiles).toInt()
-        val latRad = Math.toRadians(lat)
-        val y = ((1 - ln(tan(latRad) + 1 / cos(latRad)) / Math.PI) / 2 * tiles).toInt()
-        // OSM is keyless; darken it in night mode instead of pulling CARTO (which
-        // now needs an API key).
-        val connection = URL("https://tile.openstreetmap.org/$zoom/$x/$y.png").openConnection() as HttpURLConnection
-        connection.setRequestProperty("User-Agent", "OpenTransportValencia/1.0")
-        connection.connectTimeout = 10_000
-        connection.readTimeout = 15_000
-        val tile = connection.inputStream.use { BitmapFactory.decodeStream(it) }
-        if (!dark || tile == null) {
-            tile
-        } else {
-            val out = android.graphics.Bitmap.createBitmap(tile.width, tile.height, android.graphics.Bitmap.Config.ARGB_8888)
-            val canvas = android.graphics.Canvas(out)
-            canvas.drawBitmap(tile, 0f, 0f, null)
-            canvas.drawColor(0xB8121A22.toInt())
-            out
-        }
-    }.getOrNull()
-
-    private fun serviceLogo(context: Context, network: Network): android.graphics.Bitmap? = runCatching {
-        val asset = when (network) {
-            Network.Emt -> "emt.png"
-            Network.Metro -> "metrovalencia.png"
-            Network.Valenbisi -> "valenbisi.png"
-            Network.Metrobus -> "metrobus.png"
-            Network.Rodalies -> "rodalies.png"
-        }
-        context.assets.open(asset).use { BitmapFactory.decodeStream(it) }
-    }.getOrNull()
 
     private fun openStop(context: Context, stopId: Int): PendingIntent {
         val intent = Intent(context, MainActivity::class.java)
@@ -204,12 +134,34 @@ class StopWidgetProvider : AppWidgetProvider() {
         )
     }
 
-    private fun openApp(context: Context): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        return PendingIntent.getActivity(
-            context, 0, intent,
+    private fun refresh(context: Context): PendingIntent {
+        val intent = Intent(context, StopWidgetProvider::class.java).setAction(ACTION_REFRESH)
+        return PendingIntent.getBroadcast(
+            context, 1, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+    }
+
+    private fun scheduleRefresh(context: Context) {
+        val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = PendingIntent.getBroadcast(
+            context, 99, Intent(context, StopWidgetProvider::class.java).setAction(ACTION_REFRESH),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        alarm.setInexactRepeating(
+            AlarmManager.ELAPSED_REALTIME,
+            SystemClock.elapsedRealtime() + 60_000L,
+            60_000L, pi,
+        )
+    }
+
+    private fun cancelRefresh(context: Context) {
+        val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = PendingIntent.getBroadcast(
+            context, 99, Intent(context, StopWidgetProvider::class.java).setAction(ACTION_REFRESH),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        alarm.cancel(pi)
     }
 
     companion object {

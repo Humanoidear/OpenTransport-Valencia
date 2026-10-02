@@ -5,4 +5,6 @@
     <string name="widget_tap_to_configure">Tap to configure</string>
     <string name="widget_no_buses">No buses right now</string>
     <string name="widget_feed_soon">%1$s feed coming soon</string>
+    <string name="widget_refresh">Refresh departures</string>
+    <string name="widget_desc">Next departures at your stop</string>
 </resources>

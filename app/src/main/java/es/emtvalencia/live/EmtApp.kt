@@ -555,6 +555,7 @@ fun EmtApp() {
                     currentLine = null
                     showNearby = false
                     nearbyDismissed = true
+                    mapController?.moveCamera(LonLat(place.lon, place.lat), 16.5, duration = 600)
                 },
                 onZoomTo = { point -> mapController?.moveCamera(point, 16.5, duration = 700) },
                 darkTheme = isSystemInDarkTheme(),
@@ -576,6 +577,7 @@ fun EmtApp() {
                     searchActive = false
                     showNearby = false
                     nearbyDismissed = true
+                    mapController?.moveCamera(LonLat(stop.lon, stop.lat), 16.5, duration = 700)
                 },
                 onBusTap = { number ->
                     followedBus = number
@@ -802,6 +804,7 @@ fun EmtApp() {
                         stopInfo = null
                         currentLine = null
                         tab = 0
+                        mapController?.moveCamera(LonLat(opened.lon, opened.lat), 16.5, duration = 700)
                     },
                     onDismiss = { currentLine = null },
                 )
@@ -819,6 +822,7 @@ fun EmtApp() {
                         selectedStop = stop
                         selectedPlace = null
                         stopInfo = null
+                        mapController?.moveCamera(LonLat(stop.lon, stop.lat), 16.5, duration = 700)
                     },
                     onOpenPlace = { place ->
                         showNearby = false
@@ -826,6 +830,7 @@ fun EmtApp() {
                         selectedPlace = place
                         selectedStop = null
                         stopInfo = null
+                        mapController?.moveCamera(LonLat(place.lon, place.lat), 16.5, duration = 700)
                     },
                     onDismiss = { showNearby = false; nearbyDismissed = true },
                 )
@@ -1304,8 +1309,8 @@ private fun StopSheet(
                         tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                IconButton(onClick = { shareContext.openInMaps(stop.lat, stop.lon, cleanStopName(stop.name)) }) {
-                    Icon(Icons.Filled.Map, contentDescription = "Open in Maps")
+                IconButton(onClick = { shareContext.shareStop(cleanStopName(stop.name), stop.lat, stop.lon) }) {
+                    Icon(Icons.Filled.Share, contentDescription = "Share")
                 }
             }
 
@@ -1723,6 +1728,18 @@ private fun EmptyState(icon: androidx.compose.ui.graphics.vector.ImageVector, me
             Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
+}
+
+/** Shares a stop through the system share sheet (name + maps link). */
+fun android.content.Context.shareStop(name: String, lat: Double, lon: Double) {
+    val url = "https://www.google.com/maps/search/?api=1&query=$lat,$lon"
+    val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(android.content.Intent.EXTRA_TEXT, "$name\n$url")
+        putExtra(android.content.Intent.EXTRA_SUBJECT, name)
+    }
+    val chooser = android.content.Intent.createChooser(intent, name)
+    runCatching { startActivity(chooser) }
 }
 
 /** Opens a coordinate in a maps app: geo: first, then a Google Maps URL. */

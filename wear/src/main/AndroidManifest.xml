@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:label="OpenTransport"
@@ -23,11 +25,69 @@
             android:name=".WearActivity"
             android:exported="true"
             android:taskAffinity=""
+            android:enableOnBackInvokedCallback="true"
             android:theme="@android:style/Theme.DeviceDefault">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".StopComplicationService"
+            android:exported="true"
+            android:directBootAware="true"
+            android:label="OpenTransport departures"
+            android:icon="@drawable/ic_complication"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="SHORT_TEXT,LONG_TEXT,RANGED_VALUE,SMALL_IMAGE" />
+            <meta-data
+                android:name="androidx.watchface.complications.datasource.DEFAULT_CONFIG_SUPPORTED"
+                android:value="true" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="300" />
+            <meta-data
+                android:name="android.support.wearable.complications.PROVIDER_CONFIG_ACTION"
+                android:value="es.emtvalencia.live.wear.COMPLICATION_CONFIG" />
+        </service>
+
+        <activity
+            android:name=".ComplicationConfigActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.DeviceDefault">
+            <intent-filter>
+                <action android:name="es.emtvalencia.live.wear.COMPLICATION_CONFIG" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.support.wearable.complications.category.PROVIDER_CONFIG" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".TransitTileService"
+            android:exported="true"
+            android:label="OpenTransport departures"
+            android:icon="@drawable/ic_complication"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter>
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
+            </intent-filter>
+            <meta-data
+                android:name="androidx.wear.tiles.PREVIEW"
+                android:resource="@drawable/tile_preview" />
+        </service>
+
+        <receiver android:name=".RefreshReceiver" android:exported="false" />
+
+        <receiver android:name=".BootReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

@@ -9,5 +9,7 @@
     android:resizeMode="horizontal|vertical"
     android:updatePeriodMillis="1800000"
     android:initialLayout="@layout/widget_stop"
+    android:description="@string/widget_desc"
+    android:previewLayout="@layout/widget_stop"
     android:configure="es.emtvalencia.live.WidgetConfigureActivity"
     android:widgetCategory="home_screen" />
