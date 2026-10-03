@@ -1,4 +1,8 @@
-## OpenTransport Valencia
+<p align="center">
+	<img src="app/src/main/assets/OpenTransport_logo.png" alt="Logo de OpenTransport Valencia" width="180">
+</p>
+
+# OpenTransport Valencia
 
 Aplicación Android nativa para consultar transporte público en València en
 tiempo real. El proyecto incluye una aplicación para móvil y una aplicación
@@ -27,6 +31,28 @@ independiente para WearOS.
 - Complicación y Tile con próximas llegadas y actualización periódica.
 
 Los datos pueden variar según la disponibilidad de los servicios externos.
+
+## Capturas de pantalla
+
+### Aplicación móvil
+
+<p align="center">
+	<img src="screenshots/home.jpeg" alt="Mapa y paradas cercanas" width="220">
+	<img src="screenshots/emt.jpeg" alt="Detalle de una parada EMT" width="220">
+	<img src="screenshots/metrobus.jpeg" alt="Detalle de una parada Metrobús" width="220">
+</p>
+
+<p align="center">
+	<img src="screenshots/line.jpeg" alt="Seguimiento de una línea" width="220">
+	<img src="screenshots/track.jpeg" alt="Recorrido de una línea" width="220">
+	<img src="screenshots/saved.jpeg" alt="Paradas guardadas" width="220">
+</p>
+
+<p align="center">
+	<img src="screenshots/valenbisi.jpeg" alt="Estación Valenbisi" width="220">
+	<img src="screenshots/rodalies.jpeg" alt="Estación Rodalies" width="220">
+	<img src="screenshots/warnings.jpeg" alt="Avisos de servicio" width="220">
+</p>
 
 ## Requisitos
 
