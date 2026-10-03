@@ -138,7 +138,14 @@ fun EmtApp() {
     var plannedStopIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
     var plannedOption by remember { mutableStateOf<JourneyOption?>(null) }
     var places by remember { mutableStateOf<List<Place>>(emptyList()) }
-    var enabledNetworks by remember { mutableStateOf(setOf(Network.Emt, Network.Metro, Network.Valenbisi)) }
+    val prefs = remember { context.getSharedPreferences("emt", Context.MODE_PRIVATE) }
+    var enabledNetworks by remember {
+        mutableStateOf(
+            prefs.getStringSet("map_networks", null)?.mapNotNull { value ->
+                runCatching { Network.valueOf(value) }.getOrNull()
+            }?.toSet() ?: setOf(Network.Emt, Network.Metro, Network.Valenbisi),
+        )
+    }
     var selectedPlace by remember { mutableStateOf<Place?>(null) }
     var metrobusRoutes by remember { mutableStateOf("{\"type\":\"FeatureCollection\",\"features\":[]}") }
     var metrobusStopLines by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -151,7 +158,6 @@ fun EmtApp() {
     var alertsService by remember { mutableStateOf<Network?>(null) }
     var planModes by remember { mutableStateOf(setOf(Network.Emt)) }
     var language by remember { mutableStateOf(loadLanguage(context)) }
-    val prefs = remember { context.getSharedPreferences("emt", Context.MODE_PRIVATE) }
     var onboardingDone by remember { mutableStateOf(prefs.getBoolean("onboarded", false)) }
     var themeMode by remember { mutableStateOf(prefs.getString("theme", "system") ?: "system") }
     var mapType by remember { mutableStateOf(prefs.getString("maptype", "default") ?: "default") }
@@ -159,6 +165,11 @@ fun EmtApp() {
     SideEffect { currentStrings.value = Strings(language) }
     var pins by remember { mutableStateOf(prefs.getStringSet("pins", emptySet()).orEmpty().toSet()) }
     var alertMinutes by remember { mutableIntStateOf(prefs.getInt("alert_minutes", 10)) }
+
+    fun toggleNetwork(network: Network) {
+        enabledNetworks = if (network in enabledNetworks) enabledNetworks - network else enabledNetworks + network
+        prefs.edit().putStringSet("map_networks", enabledNetworks.map { it.name }.toSet()).apply()
+    }
 
     // Notify when a pinned line is within the configured minutes of its stop.
     LaunchedEffect(pins, alertMinutes) {
@@ -445,9 +456,7 @@ fun EmtApp() {
                 mapType = mapType,
                 onMapType = { mapType = it; prefs.edit().putString("maptype", it).apply() },
                 networks = enabledNetworks,
-                onToggleNetwork = { network ->
-                    enabledNetworks = if (network in enabledNetworks) enabledNetworks - network else enabledNetworks + network
-                },
+                onToggleNetwork = ::toggleNetwork,
                 onDone = { onboardingDone = true; prefs.edit().putBoolean("onboarded", true).apply() },
             )
         }
@@ -879,9 +888,7 @@ fun EmtApp() {
         if (showLayers) {
             LayersSheet(
                 enabled = enabledNetworks,
-                onToggle = { network ->
-                    enabledNetworks = if (network in enabledNetworks) enabledNetworks - network else enabledNetworks + network
-                },
+                onToggle = ::toggleNetwork,
                 mapType = mapType,
                 onMapType = { mapType = it; prefs.edit().putString("maptype", it).apply() },
                 onDismiss = { showLayers = false },
@@ -1318,7 +1325,7 @@ private fun StopSheet(
                 loading -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 arrivals.isEmpty() -> Text(currentStrings.value.noBuses, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
-                    LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         itemsIndexed(arrivals) { index, arrival ->
                             val selectedRow = currentLine == arrival.line
                             val near = info?.buses?.firstOrNull { it.line == arrival.line }
