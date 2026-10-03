@@ -113,7 +113,7 @@ class WearRepository(private val data: WearData) {
         metro: List<MetroStation>,
         valenbisi: List<VbStation>,
         rodalies: List<RodaliesStation>,
-        metrobus: List<MetroStation>,
+        metrobus: List<NearItem>,
     ): List<NearItem> {
         val out = nearby(lat, lon, radius, services, metro).toMutableList()
         if (Svc.Valenbisi in services) {
@@ -145,7 +145,16 @@ class WearRepository(private val data: WearData) {
             }
         }
         if (Svc.Metrobus in services) {
-            metro.forEach { _ -> }
+            metrobus.forEach { stop ->
+                val d = WearData.distance(lat, lon, stop.lat, stop.lon)
+                if (d <= radius) {
+                    out += NearItem(
+                        key = stop.key, name = stop.name, detail = stop.lines.joinToString(" · "),
+                        lat = stop.lat, lon = stop.lon, service = Svc.Metrobus, lines = stop.lines,
+                        stopId = stop.stopId,
+                    )
+                }
+            }
         }
         return out.sortedBy { WearData.distance(lat, lon, it.lat, it.lon) }.take(15)
     }

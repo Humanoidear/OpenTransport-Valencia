@@ -845,6 +845,7 @@ fun EmtApp() {
                     metrobusSchedule = { code -> repository.metrobusSchedule(code) },
                     valenbisiBikes = { number -> repository.valenbisiBikes(number) },
                     rodaliesTimes = { name -> repository.rodaliesTimes(name) },
+                    incidents = incidents,
                     isFavorite = favorites.contains(place.id),
                     onToggleFavorite = {
                         favorites = if (favorites.contains(place.id)) favorites - place.id else favorites + place.id
@@ -1296,9 +1297,6 @@ private fun StopSheet(
                             )
                         }
                         Spacer(Modifier.width(8.dp))
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            items(stop.lines) { line -> SmallLineBadge(line) }
-                        }
                     }
                 }
                 // Star sits level with the stop name; toggles the favourite.
@@ -1314,61 +1312,12 @@ private fun StopSheet(
                 }
             }
 
-            if (relevant.isNotEmpty()) {
-                Surface(
-                    tonalElevation = 3.dp,
-                    shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
-                ) {
-                    Column(Modifier.padding(12.dp)) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
-                            Spacer(Modifier.width(8.dp))
-                            Text(currentStrings.value.serviceUpdates, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                            AssistChip(
-                                onClick = { updatesOpen = !updatesOpen },
-                                label = { Text(if (updatesOpen) currentStrings.value.hide else currentStrings.value.show) },
-                            )
-                        }
-                        if (updatesOpen) {
-                            relevant.forEach { incident ->
-                                Text(incident.title, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
-                            }
-                        }
-                    }
-                }
-            }
-
             Spacer(Modifier.height(12.dp))
 
             when {
                 loading -> Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 arrivals.isEmpty() -> Text(currentStrings.value.noBuses, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(arrivals) { arrival ->
-                            val selected = currentLine == arrival.line
-                            Surface(
-                                onClick = { onSelectLine(arrival.line) },
-                                shape = RoundedCornerShape(50),
-                                color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                            ) {
-                                Row(
-                                    Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    LineBadge(arrival.line)
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        etaLabel(arrival),
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.primary,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(10.dp))
                     LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         itemsIndexed(arrivals) { index, arrival ->
                             val selectedRow = currentLine == arrival.line
@@ -1442,6 +1391,31 @@ private fun StopSheet(
                                         },
                                     )
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (relevant.isNotEmpty()) {
+                Surface(
+                    tonalElevation = 3.dp,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                            Spacer(Modifier.width(8.dp))
+                            Text(currentStrings.value.serviceUpdates, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            AssistChip(
+                                onClick = { updatesOpen = !updatesOpen },
+                                label = { Text(if (updatesOpen) currentStrings.value.hide else currentStrings.value.show) },
+                            )
+                        }
+                        if (updatesOpen) {
+                            relevant.forEach { incident ->
+                                Text(incident.title, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
                             }
                         }
                     }
@@ -2283,12 +2257,17 @@ private fun PlaceSheet(
     metrobusSchedule: suspend (String) -> List<MetrobusTime>,
     valenbisiBikes: suspend (Int) -> List<Bike>,
     rodaliesTimes: (String) -> List<Arrival>,
+    incidents: List<Incident>,
     isFavorite: Boolean,
     onToggleFavorite: () -> Unit,
     isPinned: (String) -> Boolean,
     onTogglePin: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var updatesOpen by remember { mutableStateOf(true) }
+    val relevant = place.lines.mapNotNull { line ->
+        incidents.firstOrNull { it.network == place.network && line.uppercase() in it.lines }
+    }
     DraggableSheet(
         modifier = modifier.fillMaxHeight(),
         onDismiss = onDismiss,
@@ -2301,10 +2280,6 @@ private fun PlaceSheet(
                 Column(Modifier.weight(1f)) {
                     Text(place.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        place.lines.take(4).forEach { line ->
-                            SmallLineBadge(line)
-                            Spacer(Modifier.width(4.dp))
-                        }
                         if (place.detail.isNotBlank() && place.detail != place.name) {
                             Text(
                                 place.detail,
@@ -2336,29 +2311,11 @@ private fun PlaceSheet(
                         loading = false
                     }
                     // The line badges, big, on their own row.
-                    if (place.lines.isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
-                    }
                     if (loading) {
                         Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     } else if (times.isEmpty()) {
                         Text(currentStrings.value.noTrains, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(times) { arrival ->
-                                Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.surfaceVariant) {
-                                    Row(
-                                        Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        MetroBadge(arrival.line.removePrefix("L"), height = 24.dp)
-                                        Spacer(Modifier.width(10.dp))
-                                        Text(arrival.minutes, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                                    }
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(10.dp))
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             items(times) { arrival ->
                                 ListItem(
@@ -2536,6 +2493,30 @@ private fun PlaceSheet(
                     }
                 }
                 else -> Text(placeSubtitle(place), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (relevant.isNotEmpty()) {
+                Surface(
+                    tonalElevation = 3.dp,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                            Spacer(Modifier.width(8.dp))
+                            Text(currentStrings.value.serviceUpdates, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            AssistChip(
+                                onClick = { updatesOpen = !updatesOpen },
+                                label = { Text(if (updatesOpen) currentStrings.value.hide else currentStrings.value.show) },
+                            )
+                        }
+                        if (updatesOpen) {
+                            relevant.forEach { incident ->
+                                Text(incident.title, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -47,6 +48,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -54,6 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -62,6 +67,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.rotary.RotaryScrollableDefaults
+import androidx.wear.compose.foundation.rotary.rotaryScrollable
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.Card
 import androidx.wear.compose.material3.CardDefaults
@@ -79,6 +86,7 @@ import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
+import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
@@ -91,6 +99,20 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import kotlinx.coroutines.withContext
+
+@Composable
+fun Modifier.crownScrollable(state: androidx.wear.compose.foundation.lazy.ScalingLazyListState, active: Boolean = true): Modifier {
+    val focusRequester = remember { FocusRequester() }
+    val behavior = RotaryScrollableDefaults.behavior(state)
+    LaunchedEffect(active) {
+        if (active) focusRequester.requestFocus()
+    }
+    return this
+        .focusProperties { canFocus = active }
+        .focusRequester(focusRequester)
+        .focusable()
+        .rotaryScrollable(behavior, focusRequester)
+}
 
 fun svcIcon(service: Svc): ImageVector = when (service) {
     Svc.Emt -> Icons.Filled.DirectionsBus
@@ -392,12 +414,13 @@ fun NearbyScreen(
     favKeys: Set<String>,
     onOpen: (NearItem) -> Unit,
     onOpenMap: () -> Unit,
+    active: Boolean = true,
 ) {
     val state = rememberScalingLazyListState()
     ScreenScaffold(scrollState = state) {
         ScalingLazyColumn(
             state = state,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().crownScrollable(state, active),
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -477,6 +500,7 @@ fun DetailScreen(
     isFav: Boolean,
     onToggleFav: () -> Unit,
     onBack: () -> Unit,
+    active: Boolean = true,
 ) {
     val state = rememberScalingLazyListState()
     var rows by remember(item) { mutableStateOf<List<DetailRow>>(emptyList()) }
@@ -523,7 +547,7 @@ fun DetailScreen(
     ScreenScaffold(scrollState = state) {
         ScalingLazyColumn(
             state = state,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().crownScrollable(state, active),
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -641,12 +665,13 @@ fun SearchScreen(
     onFilterOpen: (Boolean) -> Unit,
     results: List<NearItem>,
     onOpen: (NearItem) -> Unit,
+    active: Boolean = true,
 ) {
     val state = rememberScalingLazyListState()
     ScreenScaffold(scrollState = state) {
         ScalingLazyColumn(
             state = state,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().crownScrollable(state, active),
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -722,6 +747,7 @@ fun FilterScreen(
     svcFilter: Svc?,
     onSvcFilter: (Svc?) -> Unit,
     onClose: () -> Unit,
+    active: Boolean = true,
 ) {
     val state = rememberScalingLazyListState()
     Box(
@@ -732,7 +758,7 @@ fun FilterScreen(
     ScreenScaffold(scrollState = state) {
         ScalingLazyColumn(
             state = state,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().crownScrollable(state, active),
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -876,6 +902,8 @@ fun MapScreen(
         // Focusable so the crown (ACTION_SCROLL) reaches the map instead of the list behind.
         MapView(context).apply {
             onCreate(null)
+            isClickable = true
+            isFocusable = true
             isFocusableInTouchMode = true
             setOnGenericMotionListener { _, event ->
                 if (event.action != android.view.MotionEvent.ACTION_SCROLL) return@setOnGenericMotionListener false
@@ -893,6 +921,7 @@ fun MapScreen(
     var lastJson by remember { mutableStateOf("") }
     var lastLineJson by remember { mutableStateOf("") }
     var lastCenter by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    var styleRequested by remember { mutableStateOf(false) }
     val addedImages = remember { mutableSetOf<String>() }
     androidx.compose.runtime.DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
@@ -913,15 +942,30 @@ fun MapScreen(
         style.getSourceAs<GeoJsonSource>("wear-stops")?.setGeoJson(json)
         style.getSourceAs<GeoJsonSource>("wear-line")?.setGeoJson(lineJson)
     }
+    var setupStyle: ((MapLibreMap, Style) -> Unit)? = null
     AndroidView(
         factory = { mapView },
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().zIndex(1f),
         update = {
             it.requestFocus()
             it.getMapAsync { map ->
                 mapRef = map
-                val styleUrl = if (dark) STYLE_DARK else STYLE_LIGHT
-                map.setStyle(styleUrl) { style ->
+                map.uiSettings.setAllGesturesEnabled(true)
+                // Style is set once; re-setting it wipes the dot images and blanks the map.
+                if (!styleRequested) {
+                    styleRequested = true
+                    val styleUrl = if (dark) STYLE_DARK else STYLE_LIGHT
+                    map.setStyle(styleUrl) { style -> setupStyle?.invoke(map, style) }
+                } else {
+                    applyData(map, stopsJson(items), lineJson(lineShapes))
+                    lastJson = stopsJson(items)
+                    lastLineJson = lineJson(lineShapes)
+                    map.style?.getSourceAs<GeoJsonSource>("wear-user")?.setGeoJson(userJson(lat, lon))
+                }
+            }
+        },
+    )
+    setupStyle = { map, style ->
                     if (style.getSource("wear-stops") == null) {
                         style.addSource(GeoJsonSource("wear-stops", emptyStopsJson()))
                     }
@@ -1012,10 +1056,7 @@ fun MapScreen(
                             false
                         }
                     }
-                }
-            }
-        },
-    )
+    }
     LaunchedEffect(items, lineShapes, mapRef) {
         val map = mapRef ?: return@LaunchedEffect
         if (map.style == null) return@LaunchedEffect
@@ -1120,12 +1161,13 @@ fun FavoritesScreen(
     repository: WearRepository,
     rodaliesFn: (String) -> List<Live>,
     onOpen: (NearItem) -> Unit,
+    active: Boolean = true,
 ) {
     val state = rememberScalingLazyListState()
     ScreenScaffold(scrollState = state) {
         ScalingLazyColumn(
             state = state,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().crownScrollable(state, active),
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -1154,12 +1196,13 @@ fun SettingsScreen(
     onToggleService: (Svc) -> Unit,
     radius: Int,
     onRadius: (Int) -> Unit,
+    active: Boolean = true,
 ) {
     val state = rememberScalingLazyListState()
     ScreenScaffold(scrollState = state) {
         ScalingLazyColumn(
             state = state,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().crownScrollable(state, active),
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {

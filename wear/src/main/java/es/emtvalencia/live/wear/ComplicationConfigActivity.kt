@@ -63,7 +63,7 @@ class ComplicationConfigActivity : ComponentActivity() {
                     ScreenScaffold(scrollState = state) {
                         ScalingLazyColumn(
                             state = state,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier.fillMaxSize().crownScrollable(state),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {

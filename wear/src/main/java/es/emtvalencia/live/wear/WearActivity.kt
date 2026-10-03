@@ -4,7 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material3.AppScaffold
 import androidx.wear.compose.material3.MaterialTheme
@@ -59,7 +60,7 @@ internal fun decodeFav(raw: String): NearItem? {
 fun loadServices(context: Context): Set<Svc> {
     val saved = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getStringSet(KEY_SERVICES, null)
     return saved?.mapNotNull { runCatching { Svc.valueOf(it) }.getOrNull() }?.toSet()
-        ?: setOf(Svc.Emt, Svc.Metro)
+        ?: Svc.entries.toSet()
 }
 
 fun loadRadius(context: Context): Int =
@@ -104,6 +105,7 @@ class WearActivity : ComponentActivity() {
         var vbCache by remember { mutableStateOf<List<VbStation>>(emptyList()) }
         var rodaliesCache by remember { mutableStateOf<List<RodaliesStation>>(emptyList()) }
         var mbLines by remember { mutableStateOf<List<String>>(emptyList()) }
+        var mbCache by remember { mutableStateOf<List<NearItem>>(emptyList()) }
         var mapBus by remember { mutableStateOf<List<NearItem>>(emptyList()) }
         var favs by remember {
             mutableStateOf(
@@ -133,7 +135,16 @@ class WearActivity : ComponentActivity() {
             mbLines = repository.metrobusLines()
         }
 
-        LaunchedEffect(services, radius, metroCache, vbCache, rodaliesCache) {
+        LaunchedEffect(location, services) {
+            val loc = location ?: return@LaunchedEffect
+            mbCache = if (Svc.Metrobus in services) {
+                repository.metrobusNear(loc.first, loc.second, 5000)
+            } else {
+                emptyList()
+            }
+        }
+
+        LaunchedEffect(services, radius, metroCache, vbCache, rodaliesCache, mbCache) {
             val loc = rememberLocation(context)
             location = loc
             if (loc == null) {
@@ -142,12 +153,9 @@ class WearActivity : ComponentActivity() {
                 return@LaunchedEffect
             }
             val (lat, lon) = loc
-            val base = repository.nearbyAll(lat, lon, radius.toDouble(), services, metroCache, vbCache, rodaliesCache, emptyList())
-            val withBus = if (Svc.Metrobus in services) {
-                val bus = repository.metrobusNear(lat, lon)
-                    .filter { WearData.distance(lat, lon, it.lat, it.lon) <= radius }
-                base + bus
-            } else base
+            val withBus = repository.nearbyAll(
+                lat, lon, radius.toDouble(), services, metroCache, vbCache, rodaliesCache, mbCache,
+            )
             val withLines = withBus.map { item ->
                 if (item.service == Svc.Metrobus && item.lines.isEmpty()) {
                     val lines = repository.metrobusOccupancy(item.key.removePrefix("mb-")).map { it.line }.distinct()
@@ -174,10 +182,10 @@ class WearActivity : ComponentActivity() {
         }
 
         // Wide Metrobús fetch for the map so dots show well beyond the nearby-list radius.
-        LaunchedEffect(mapOpen, location) {
+        LaunchedEffect(mapOpen, location, services, mbCache) {
             val loc = location
             mapBus = if (mapOpen && loc != null && Svc.Metrobus in services) {
-                repository.metrobusNear(loc.first, loc.second, 5000)
+                mbCache
             } else {
                 emptyList()
             }
@@ -200,26 +208,47 @@ class WearActivity : ComponentActivity() {
             }
         }
 
-        BackHandler(enabled = selected != null) { selected = null }
-        BackHandler(enabled = selected == null && filterOpen) { filterOpen = false }
-        BackHandler(enabled = selected == null && !filterOpen && mapOpen) {
-            mapOpen = false
-            mapLine = null
+        var backProgress by remember { mutableStateOf(0f) }
+        PredictiveBackHandler(enabled = selected != null || filterOpen || mapOpen) { progress ->
+            var completed = false
+            try {
+                progress.collect { backProgress = it.progress }
+                completed = true
+            } finally {
+                if (completed) {
+                    when {
+                        selected != null -> selected = null
+                        filterOpen -> filterOpen = false
+                        mapOpen -> {
+                            mapOpen = false
+                            mapLine = null
+                        }
+                    }
+                }
+                backProgress = 0f
+            }
         }
 
         val pagerState = rememberPagerState(pageCount = { 4 })
         val current = selected
         if (current != null) {
-            DetailScreen(
-                item = current,
-                repository = repository,
-                context = context,
-                rodaliesTimes = { name -> WearData.rodaliesTimes(context, name) },
-                distanceM = location?.let { WearData.distance(it.first, it.second, current.lat, current.lon) },
-                isFav = favs.any { it.key == current.key },
-                onToggleFav = { toggleFav(current) },
-                onBack = { selected = null },
-            )
+            Box(
+                Modifier.fillMaxSize().graphicsLayer {
+                    translationX = size.width * backProgress
+                    alpha = 1f - backProgress * 0.15f
+                },
+            ) {
+                DetailScreen(
+                    item = current,
+                    repository = repository,
+                    context = context,
+                    rodaliesTimes = { name -> WearData.rodaliesTimes(context, name) },
+                    distanceM = location?.let { WearData.distance(it.first, it.second, current.lat, current.lon) },
+                    isFav = favs.any { it.key == current.key },
+                    onToggleFav = { toggleFav(current) },
+                    onBack = { selected = null },
+                )
+            }
         } else {
             Box(Modifier.fillMaxSize()) {
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize(), userScrollEnabled = !mapOpen) { page ->
@@ -232,6 +261,7 @@ class WearActivity : ComponentActivity() {
                             favKeys = favs.map { it.key }.toSet(),
                             onOpen = { selected = it },
                             onOpenMap = { mapOpen = true },
+                            active = pagerState.currentPage == 0 && !filterOpen && !mapOpen,
                         )
                         1 -> SearchScreen(
                             query = query,
@@ -242,7 +272,7 @@ class WearActivity : ComponentActivity() {
                             onSvcFilter = { svcFilter = it },
                             filterOpen = filterOpen,
                             onFilterOpen = { filterOpen = it },
-                        results = searchResults(query, data, metroCache, vbCache, rodaliesCache, mbLines, services, linesMode, svcFilter),
+                        results = searchResults(query, data, metroCache, vbCache, rodaliesCache, mbLines, mbCache, items, services, linesMode, svcFilter),
                         onOpen = { item ->
                             val parts = item.key.split("-")
                             val lineKey = when {
@@ -257,12 +287,14 @@ class WearActivity : ComponentActivity() {
                                 selected = item
                             }
                         },
+                        active = pagerState.currentPage == 1 && !filterOpen && !mapOpen,
                         )
                         2 -> FavoritesScreen(
                             favs = favs.toList(),
                             repository = repository,
                             rodaliesFn = { name -> WearData.rodaliesTimes(context, name) },
                             onOpen = { selected = it },
+                            active = pagerState.currentPage == 2 && !filterOpen && !mapOpen,
                         )
                         else -> SettingsScreen(
                             services = services,
@@ -275,6 +307,7 @@ class WearActivity : ComponentActivity() {
                                 radius = meters
                                 prefs.edit().putInt(KEY_RADIUS, meters).apply()
                             },
+                            active = pagerState.currentPage == 3 && !filterOpen && !mapOpen,
                         )
                     }
                 }
@@ -296,13 +329,20 @@ class WearActivity : ComponentActivity() {
                     }
                 }
                 if (filterOpen) {
-                    FilterScreen(
-                        linesMode = linesMode,
-                        onLinesMode = { linesMode = it },
-                        svcFilter = svcFilter,
-                        onSvcFilter = { svcFilter = it },
-                        onClose = { filterOpen = false },
-                    )
+                    Box(
+                        Modifier.fillMaxSize().graphicsLayer {
+                            translationX = size.width * backProgress
+                            alpha = 1f - backProgress * 0.15f
+                        },
+                    ) {
+                        FilterScreen(
+                            linesMode = linesMode,
+                            onLinesMode = { linesMode = it },
+                            svcFilter = svcFilter,
+                            onSvcFilter = { svcFilter = it },
+                            onClose = { filterOpen = false },
+                        )
+                    }
                 }
                 if (mapOpen) {
                     val loc = location
@@ -312,16 +352,23 @@ class WearActivity : ComponentActivity() {
                             allMapItems(data, metroCache, vbCache, rodaliesCache, mapBus, services)
                         }
                         val shapes = if (focus != null) lineMapShapes else emptyList()
-                        MapScreen(
-                            loc.first, loc.second, mapItems, shapes,
-                            onOpenStop = { key ->
-                                (mapItems + items).firstOrNull { it.key == key }?.let {
-                                    selected = it
-                                    mapOpen = false
-                                    mapLine = null
-                                }
+                        Box(
+                            Modifier.fillMaxSize().graphicsLayer {
+                                translationX = size.width * backProgress
+                                alpha = 1f - backProgress * 0.15f
                             },
-                        )
+                        ) {
+                            MapScreen(
+                                loc.first, loc.second, mapItems, shapes,
+                                onOpenStop = { key ->
+                                    (mapItems + items).firstOrNull { it.key == key }?.let {
+                                        selected = it
+                                        mapOpen = false
+                                        mapLine = null
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -383,6 +430,8 @@ class WearActivity : ComponentActivity() {
         vb: List<VbStation>,
         rodalies: List<RodaliesStation>,
         mbLines: List<String>,
+        mbCache: List<NearItem>,
+        nearby: List<NearItem>,
         services: Set<Svc>,
         linesMode: Boolean,
         svcFilter: Svc?,
@@ -424,6 +473,9 @@ class WearActivity : ComponentActivity() {
                         lat = station.lat, lon = station.lon, service = Svc.Rodalies, lines = station.lines,
                     )
                 }
+            }
+            if (Svc.Metrobus in services && inFilter(Svc.Metrobus)) {
+                mbCache.filter { it.name.lowercase().contains(q) }.take(6).forEach { out += it }
             }
         } else {
             if (Svc.Emt in services && inFilter(Svc.Emt)) {

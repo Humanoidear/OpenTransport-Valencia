@@ -51,7 +51,7 @@
                 android:value="true" />
             <meta-data
                 android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
-                android:value="300" />
+                android:value="60" />
             <meta-data
                 android:name="android.support.wearable.complications.PROVIDER_CONFIG_ACTION"
                 android:value="es.emtvalencia.live.wear.COMPLICATION_CONFIG" />

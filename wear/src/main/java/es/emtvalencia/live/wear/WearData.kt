@@ -84,8 +84,14 @@ class WearData(val stops: List<Stop>) {
                     val name = props.optString("stop_name")
                     if (name.isBlank()) continue
                     val lines = linkedSetOf<String>()
+                    props.optJSONArray("lines")?.let { array ->
+                        for (j in 0 until array.length()) {
+                            val line = array.optString(j).trim()
+                            if (line.isNotBlank()) lines += "C" + line.removePrefix("C")
+                        }
+                    }
                     val arr = times.optJSONArray(name)
-                    if (arr != null) for (j in 0 until arr.length()) {
+                    if (lines.isEmpty() && arr != null) for (j in 0 until arr.length()) {
                         arr.optString(j).split("|").getOrNull(1)?.takeIf { it.isNotBlank() }?.let { lines += it }
                     }
                     add(RodaliesStation(name, coords.optDouble(1), coords.optDouble(0), lines.sorted()))

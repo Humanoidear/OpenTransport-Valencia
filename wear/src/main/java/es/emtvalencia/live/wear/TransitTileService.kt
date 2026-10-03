@@ -44,6 +44,7 @@ class TransitTileService : Material3TileService() {
 
     override fun onTileAddEvent(event: TileAddEvent) {
         super.onTileAddEvent(event)
+        RefreshScheduler.pushUpdates(this)
         RefreshScheduler.schedule(this)
     }
 

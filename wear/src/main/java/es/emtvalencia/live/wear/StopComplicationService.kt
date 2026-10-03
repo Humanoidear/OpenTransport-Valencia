@@ -28,6 +28,7 @@ class StopComplicationService : SuspendingComplicationDataSourceService() {
 
     override fun onComplicationActivated(complicationInstanceId: Int, type: ComplicationType) {
         super.onComplicationActivated(complicationInstanceId, type)
+        RefreshScheduler.pushUpdates(this)
         RefreshScheduler.schedule(this)
     }
 
@@ -41,7 +42,8 @@ class StopComplicationService : SuspendingComplicationDataSourceService() {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val validity = TimeRange.between(Instant.now(), Instant.now().plusSeconds(60))
+        // Keep the last value visible if the watch delays a background refresh.
+        val validity = TimeRange.between(Instant.now(), Instant.now().plusSeconds(300))
         val next = arrivals.firstOrNull()
         // Line in the title (stacked above the time), time in the text.
         val longText = arrivals.take(2).joinToString(" · ") { "${it.line} ${it.minutes}" }.ifBlank { "No times" }
