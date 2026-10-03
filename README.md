@@ -26,8 +26,6 @@ independiente para WearOS.
 - Consulta de paradas cercanas, búsqueda y favoritos.
 - Datos de EMT, Metrovalencia, Metrobús, Rodalies y Valenbisi.
 - Mapa con marcadores, líneas y zoom mediante la corona del reloj.
-- Desplazamiento de las listas mediante la corona.
-- Navegación con gesto de retroceso predictivo.
 - Complicación y Tile con próximas llegadas y actualización periódica.
 
 Los datos pueden variar según la disponibilidad de los servicios externos.
