@@ -54,6 +54,21 @@ Los datos pueden variar según la disponibilidad de los servicios externos.
 	<img src="screenshots/warnings.jpeg" alt="Avisos de servicio" width="220">
 </p>
 
+### WearOS
+
+<p align="center">
+	<img src="screenshots/main.jpeg" alt="Pantalla de paradas cercanas en WearOS" width="180">
+	<img src="screenshots/map.jpeg" alt="Mapa en WearOS" width="180">
+	<img src="screenshots/stop.jpeg" alt="Detalle de parada en WearOS" width="180">
+	<img src="screenshots/search.jpeg" alt="Búsqueda en WearOS" width="180">
+</p>
+
+<p align="center">
+	<img src="screenshots/saved_wear.jpeg" alt="Paradas guardadas en WearOS" width="180">
+	<img src="screenshots/complication.jpeg" alt="Complicación de OpenTransport en la esfera" width="180">
+	<img src="screenshots/widget.jpeg" alt="Tile de próximas llegadas en WearOS" width="180">
+</p>
+
 ## Requisitos
 
 - Android Studio reciente.
