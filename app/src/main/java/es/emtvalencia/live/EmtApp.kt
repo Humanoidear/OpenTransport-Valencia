@@ -1303,7 +1303,10 @@ private fun StopSheet(
                                 color = MaterialTheme.colorScheme.primary,
                             )
                         }
-                        Spacer(Modifier.width(8.dp))
+                        if (stop.lines.isNotEmpty()) {
+                            Spacer(Modifier.width(8.dp))
+                            stop.lines.forEach { line -> SmallLineBadge(line) }
+                        }
                     }
                 }
                 // Star sits level with the stop name; toggles the favourite.
@@ -2275,6 +2278,7 @@ private fun PlaceSheet(
     val relevant = place.lines.mapNotNull { line ->
         incidents.firstOrNull { it.network == place.network && line.uppercase() in it.lines }
     }
+    val shareContext = LocalContext.current
     DraggableSheet(
         modifier = modifier.fillMaxHeight(),
         onDismiss = onDismiss,
@@ -2287,6 +2291,12 @@ private fun PlaceSheet(
                 Column(Modifier.weight(1f)) {
                     Text(place.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (place.lines.isNotEmpty()) {
+                            place.lines.take(5).forEach { line ->
+                                SmallLineBadge(line)
+                                Spacer(Modifier.width(4.dp))
+                            }
+                        }
                         if (place.detail.isNotBlank() && place.detail != place.name) {
                             Text(
                                 place.detail,
@@ -2304,6 +2314,9 @@ private fun PlaceSheet(
                         contentDescription = "Favourite",
                         tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+                IconButton(onClick = { shareContext.shareStop(place.name, place.lat, place.lon) }) {
+                    Icon(Icons.Filled.Share, contentDescription = "Share")
                 }
             }
             Spacer(Modifier.height(12.dp))
